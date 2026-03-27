@@ -20,7 +20,7 @@ static SANDBOX_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_default()
+        .expect("Failed to build WASM sandbox HTTP client")
 });
 
 /// Dispatch a host call to the appropriate handler.

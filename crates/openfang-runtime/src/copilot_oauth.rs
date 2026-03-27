@@ -13,7 +13,7 @@ static OAUTH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .unwrap_or_default()
+        .expect("Failed to build Copilot OAuth HTTP client")
 });
 
 /// GitHub device code request URL.

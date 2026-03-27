@@ -14,7 +14,7 @@ static MEDIA_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .unwrap_or_default()
+        .expect("Failed to build media understanding HTTP client")
 });
 
 /// Media understanding engine.

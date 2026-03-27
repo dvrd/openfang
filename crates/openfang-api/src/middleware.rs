@@ -72,12 +72,23 @@ pub async fn auth(
     // SECURITY: Reject path-traversal sequences before any allowlist check.
     // Without this, a raw path like /a2a/../api/admin would pass starts_with("/a2a/")
     // in the public allowlist below, while the router resolves it to /api/admin.
+    // Patterns covered:
+    //   /../ or /..  — literal dot-dot
+    //   %2e%2e       — percent-encoded dot-dot (both cases)
+    //   ..%2f / ..%2F — dot-dot followed by encoded slash
+    //   %252e        — double-encoded dot (decodes to %2e on a second pass)
+    //   %255c        — double-encoded backslash (Windows path separator)
+    // Note: bare %2F (encoded slash) is NOT blocked — it is valid in path segments
+    // (e.g. /api/providers/github-copilot/oauth/poll/abc%2Fdef) and does not form
+    // a traversal sequence on its own.
     let path = request.uri().path();
-    if path.contains("/../")
-        || path.ends_with("/..")
-        || path.contains("%2e%2e")
-        || path.contains("%2E%2E")
-        || path.contains("%2F")  // encoded slash — can be used to hide traversal
+    let path_lower = path.to_ascii_lowercase();
+    if path_lower.contains("/../")
+        || path_lower.ends_with("/..")
+        || path_lower.contains("%2e%2e")
+        || path_lower.contains("..%2f")
+        || path_lower.contains("%252e")
+        || path_lower.contains("%255c")
     {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)

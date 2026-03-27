@@ -63,7 +63,10 @@ fn validate_pre_dns(url: &str) -> Result<String, String> {
     let host = extract_host(url);
     let hostname = extract_hostname(&host);
 
-    if BLOCKED_HOSTNAMES.contains(&hostname) {
+    // SECURITY: Case-insensitive comparison — DNS is case-insensitive, so
+    // "LOCALHOST" and "Metadata.Google.Internal" must be caught here.
+    let hostname_lower = hostname.to_ascii_lowercase();
+    if BLOCKED_HOSTNAMES.contains(&hostname_lower.as_str()) {
         return Err(format!(
             "SSRF blocked: {hostname} is a restricted hostname"
         ));

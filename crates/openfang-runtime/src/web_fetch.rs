@@ -80,9 +80,28 @@ impl WebFetchEngine {
             format!("Mozilla/5.0 (compatible; {})", crate::USER_AGENT),
         );
 
-        // Add custom headers
+        // Add custom headers — reject headers that could enable Host injection,
+        // request smuggling, or proxy bypass.
+        // SECURITY: "host" override would let a caller route the request to a
+        // different vhost than the SSRF-checked URL.
+        // "transfer-encoding"/"content-length" combinations can cause HTTP
+        // request smuggling against shared upstream proxies.
+        const BLOCKED_HEADERS: &[&str] = &[
+            "host",
+            "transfer-encoding",
+            "content-length",
+            "connection",
+            "upgrade",
+            "proxy-authorization",
+            "proxy-connection",
+        ];
         if let Some(hdrs) = headers {
             for (k, v) in hdrs {
+                let k_lower = k.as_str().to_ascii_lowercase();
+                if BLOCKED_HEADERS.contains(&k_lower.as_str()) {
+                    tracing::warn!(header = %k_lower, "Blocked dangerous header in web_fetch");
+                    continue;
+                }
                 if let Some(val) = v.as_str() {
                     req = req.header(k.as_str(), val);
                 }

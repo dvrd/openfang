@@ -10,7 +10,7 @@ static IMAGE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .unwrap_or_default()
+        .expect("Failed to build image generation HTTP client")
 });
 
 /// Generate images via OpenAI's image generation API.

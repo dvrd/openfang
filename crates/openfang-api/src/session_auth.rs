@@ -41,6 +41,12 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     let expiry_str = &before_sig[expiry_sep + 1..];
     let username = &before_sig[..expiry_sep];
 
+    // Reject tokens with an empty username — a leading ':' in the decoded string
+    // would produce an empty username field which must never match any real user.
+    if username.is_empty() {
+        return None;
+    }
+
     let expiry: i64 = expiry_str.parse().ok()?;
     if chrono::Utc::now().timestamp() > expiry {
         return None;
