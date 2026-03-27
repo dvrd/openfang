@@ -9533,10 +9533,10 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
     if uuid::Uuid::parse_str(&file_id).is_err() {
         return (
             StatusCode::BAD_REQUEST,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/json".to_string(),
-            )],
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json".to_string()),
+                (axum::http::header::CONTENT_DISPOSITION, "inline".to_string()),
+            ],
             b"{\"error\":\"Invalid file ID\"}".to_vec(),
         );
     }
@@ -9552,10 +9552,10 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
             if !file_path.exists() {
                 return (
                     StatusCode::NOT_FOUND,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/json".to_string(),
-                    )],
+                    [
+                        (axum::http::header::CONTENT_TYPE, "application/json".to_string()),
+                        (axum::http::header::CONTENT_DISPOSITION, "inline".to_string()),
+                    ],
                     b"{\"error\":\"File not found\"}".to_vec(),
                 );
             }
@@ -9566,15 +9566,20 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
     match std::fs::read(&file_path) {
         Ok(data) => (
             StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, content_type)],
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                // SECURITY: Force download to prevent stored XSS — a text/html
+                // upload would otherwise execute in the origin context.
+                (axum::http::header::CONTENT_DISPOSITION, "attachment".to_string()),
+            ],
             data,
         ),
         Err(_) => (
             StatusCode::NOT_FOUND,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/json".to_string(),
-            )],
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json".to_string()),
+                (axum::http::header::CONTENT_DISPOSITION, "inline".to_string()),
+            ],
             b"{\"error\":\"File not found on disk\"}".to_vec(),
         ),
     }

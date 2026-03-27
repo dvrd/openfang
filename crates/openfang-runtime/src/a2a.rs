@@ -404,8 +404,11 @@ impl A2aClient {
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                // SECURITY: Disable redirects to prevent SSRF bypass — an
+                // attacker-controlled A2A agent URL could 302 to cloud IMDS.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .unwrap_or_default(),
+                .expect("Failed to build A2A HTTP client"),
         }
     }
 
