@@ -83,17 +83,13 @@ fn validate_pre_dns(url: &str) -> Result<String, String> {
 
 /// Step 3: DNS resolution — check every returned IP (blocking I/O).
 /// Takes the pre-parsed `host:port` string to avoid re-parsing the URL.
-fn validate_dns(host: &str, is_https: bool) -> Result<(), String> {
+fn validate_dns(host: &str, _is_https: bool) -> Result<(), String> {
     let hostname = extract_hostname(host);
 
-    // Use the port from the parsed host, or default based on scheme.
-    let socket_addr = if host.contains(':') {
-        host.to_string()
-    } else if is_https {
-        format!("{hostname}:443")
-    } else {
-        format!("{hostname}:80")
-    };
+    // `extract_host` always returns a `host:port` string, so `host` is used
+    // directly as the socket address. The `_is_https` parameter is retained for
+    // API consistency (callers pass it) but the fallback branches are unreachable.
+    let socket_addr = host.to_string();
 
     // SECURITY: Fail-closed — if DNS resolution fails, block the request.
     let addrs = socket_addr

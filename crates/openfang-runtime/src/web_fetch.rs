@@ -94,6 +94,14 @@ impl WebFetchEngine {
             "upgrade",
             "proxy-authorization",
             "proxy-connection",
+            // SECURITY: Block forwarding headers that a proxy in the request path
+            // (e.g. HTTPS_PROXY from the environment) might honour to re-route the
+            // request to an internal host, bypassing the SSRF URL check.
+            "x-forwarded-host",
+            "x-forwarded-for",
+            "x-original-url",
+            "x-rewrite-url",
+            "forwarded",
         ];
         if let Some(hdrs) = headers {
             for (k, v) in hdrs {
