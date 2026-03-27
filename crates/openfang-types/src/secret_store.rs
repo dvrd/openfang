@@ -33,6 +33,11 @@ pub fn get_secret(key: &str) -> Option<String> {
 
 /// Retrieve a secret, falling back to the process environment.
 ///
+/// **Priority:** the in-process store is checked first; the OS environment is
+/// only consulted when the key is absent from the store. This means a value set
+/// via [`set_secret`] at runtime will shadow an identically named startup env
+/// var. Callers that want only runtime-set values should use [`get_secret`].
+///
 /// Use this instead of `std::env::var()` when the value may have been set at
 /// runtime via the channel-configuration UI.
 pub fn get_secret_or_env(key: &str) -> Option<String> {
@@ -44,7 +49,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip() {
+    fn test_round_trip() {
         set_secret("TEST_SECRET_STORE_RT", "hello");
         assert_eq!(get_secret("TEST_SECRET_STORE_RT").as_deref(), Some("hello"));
         remove_secret("TEST_SECRET_STORE_RT");

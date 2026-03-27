@@ -323,9 +323,11 @@ fn host_env_read(state: &GuestState, params: &serde_json::Value) -> serde_json::
     if let Err(e) = check_capability(&state.capabilities, &Capability::EnvRead(name.to_string())) {
         return e;
     }
-    match std::env::var(name) {
-        Ok(val) => json!({"ok": val}),
-        Err(_) => json!({"ok": null}),
+    // Use get_secret_or_env so runtime-configured secrets (set via the UI or
+    // secret_store API) are visible here, not just startup env vars.
+    match openfang_types::secret_store::get_secret_or_env(name) {
+        Some(val) => json!({"ok": val}),
+        None => json!({"ok": null}),
     }
 }
 

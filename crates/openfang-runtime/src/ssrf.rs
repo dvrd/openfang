@@ -37,6 +37,12 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
     "127.0.0.1",       // Explicit loopback (belt-and-suspenders)
     "::1",
     "[::1]",
+    // IPv4-mapped IPv6 literals for IMDS/loopback — belt-and-suspenders in case
+    // the OS resolves these literals directly without going through is_private_ip.
+    "::ffff:169.254.169.254",
+    "[::ffff:169.254.169.254]",
+    "::ffff:127.0.0.1",
+    "[::ffff:127.0.0.1]",
 ];
 
 /// Check whether a URL targets a private/internal network resource (sync).
