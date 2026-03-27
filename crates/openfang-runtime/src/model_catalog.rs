@@ -53,7 +53,7 @@ impl ModelCatalog {
 
     /// Detect which providers have API keys configured.
     ///
-    /// Checks `std::env::var()` for each provider's API key env var.
+    /// Checks the thread-safe secret store (with env fallback) for each provider's API key env var.
     /// Only checks presence — never reads or stores the actual secret.
     pub fn detect_auth(&mut self) {
         for provider in &mut self.providers {
@@ -82,13 +82,13 @@ impl ModelCatalog {
             }
 
             // Primary: check the provider's declared env var
-            let has_key = std::env::var(&provider.api_key_env).is_ok();
+            let has_key = openfang_types::secret_store::get_secret_or_env(&provider.api_key_env).is_some();
 
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
-                "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "gemini" => openfang_types::secret_store::get_secret_or_env("GOOGLE_API_KEY").is_some(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
+                    openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY").is_some() || read_codex_credential().is_some()
                 }
                 // claude-code is handled above (before key_required check)
                 _ => false,

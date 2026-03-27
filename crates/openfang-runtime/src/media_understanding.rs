@@ -118,11 +118,11 @@ impl MediaEngine {
         let (api_url, api_key) = match provider {
             "groq" => (
                 "https://api.groq.com/openai/v1/audio/transcriptions",
-                std::env::var("GROQ_API_KEY").map_err(|_| "GROQ_API_KEY not set")?,
+                openfang_types::secret_store::get_secret_or_env("GROQ_API_KEY").ok_or("GROQ_API_KEY not set")?,
             ),
             "openai" => (
                 "https://api.openai.com/v1/audio/transcriptions",
-                std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?,
+                openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY").ok_or("OPENAI_API_KEY not set")?,
             ),
             other => return Err(format!("Unsupported audio provider: {}", other)),
         };
@@ -194,7 +194,9 @@ impl MediaEngine {
             return Err("Video description is disabled in configuration".into());
         }
 
-        if std::env::var("GEMINI_API_KEY").is_err() && std::env::var("GOOGLE_API_KEY").is_err() {
+        if openfang_types::secret_store::get_secret_or_env("GEMINI_API_KEY").is_none()
+            && openfang_types::secret_store::get_secret_or_env("GOOGLE_API_KEY").is_none()
+        {
             return Err("Video description requires GEMINI_API_KEY or GOOGLE_API_KEY".into());
         }
 
@@ -244,13 +246,14 @@ impl MediaEngine {
 
 /// Detect which vision provider is available based on environment variables.
 fn detect_vision_provider() -> Option<&'static str> {
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+    use openfang_types::secret_store::get_secret_or_env;
+    if get_secret_or_env("ANTHROPIC_API_KEY").is_some() {
         return Some("anthropic");
     }
-    if std::env::var("OPENAI_API_KEY").is_ok() {
+    if get_secret_or_env("OPENAI_API_KEY").is_some() {
         return Some("openai");
     }
-    if std::env::var("GEMINI_API_KEY").is_ok() || std::env::var("GOOGLE_API_KEY").is_ok() {
+    if get_secret_or_env("GEMINI_API_KEY").is_some() || get_secret_or_env("GOOGLE_API_KEY").is_some() {
         return Some("gemini");
     }
     None

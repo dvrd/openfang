@@ -12,8 +12,8 @@ pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult,
     request.validate()?;
 
     // Check for API key (presence only — never read the actual value into logs)
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY not set. Image generation requires an OpenAI API key.")?;
+    let api_key = openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY")
+        .ok_or("OPENAI_API_KEY not set. Image generation requires an OpenAI API key.")?;
 
     let model_str = request.model.to_string();
 
