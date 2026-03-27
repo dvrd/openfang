@@ -116,14 +116,14 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // If no API key configured (empty, whitespace-only, or missing), skip auth
-    // entirely. Users who don't set api_key accept that all endpoints are open.
+    // If no API key configured (empty or missing), skip auth entirely.
+    // Users who don't set api_key accept that all endpoints are open.
     // To secure the dashboard, set a non-empty api_key in config.toml.
-    let api_key_trimmed = auth_state.api_key.trim().to_string();
-    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
+    // Note: api_key is already trimmed at startup in server.rs.
+    if auth_state.api_key.is_empty() && !auth_state.auth_enabled {
         return next.run(request).await;
     }
-    let api_key = api_key_trimmed.as_str();
+    let api_key = auth_state.api_key.as_str();
 
     // Check Authorization: Bearer <token> header, then fallback to X-API-Key
     let bearer_token = request
