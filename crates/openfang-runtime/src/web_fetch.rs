@@ -4,7 +4,7 @@
 //! Pipeline: SSRF check → cache lookup → HTTP GET → detect HTML →
 //! html_to_markdown() → truncate → wrap_external_content() → cache → return
 
-use crate::ssrf::check_ssrf;
+use crate::ssrf::check_ssrf_async;
 use crate::str_utils::safe_truncate_str;
 use crate::web_cache::WebCache;
 use crate::web_content::{html_to_markdown, wrap_external_content};
@@ -53,7 +53,7 @@ impl WebFetchEngine {
         let method_upper = method.to_uppercase();
 
         // Step 1: SSRF protection — BEFORE any network I/O
-        check_ssrf(url)?;
+        check_ssrf_async(url).await?;
 
         // Step 2: Cache lookup (only for GET)
         let cache_key = format!("fetch:{}:{}", method_upper, url);
@@ -184,6 +184,7 @@ fn is_html(content_type: &str, body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssrf::check_ssrf;
     use crate::str_utils::safe_truncate_str;
 
     #[test]

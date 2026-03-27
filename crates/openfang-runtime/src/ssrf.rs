@@ -6,6 +6,21 @@
 
 use std::net::{IpAddr, ToSocketAddrs};
 
+/// Async-safe SSRF check — offloads blocking DNS to a thread pool.
+///
+/// Use this from async contexts (web_fetch, browser, tool_runner).
+/// Falls back to [`check_ssrf`] for the actual validation logic.
+pub async fn check_ssrf_async(url: &str) -> Result<(), String> {
+    // Steps 1 & 2 (scheme gate + blocklist) are non-blocking — run inline.
+    check_ssrf_pre_dns(url)?;
+
+    // Step 3: DNS resolution — offload to blocking thread pool.
+    let url_owned = url.to_string();
+    tokio::task::spawn_blocking(move || check_ssrf_dns(&url_owned))
+        .await
+        .map_err(|e| format!("SSRF check task failed: {e}"))?
+}
+
 /// Hostnames and literal IPs that must never be contacted.
 /// Covers cloud IMDS endpoints, loopback variants, and link-local sentinels.
 const BLOCKED_HOSTNAMES: &[&str] = &[
@@ -24,37 +39,42 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
     "[::1]",
 ];
 
-/// Check whether a URL targets a private/internal network resource.
+/// Check whether a URL targets a private/internal network resource (sync).
 ///
 /// Validates:
 /// 1. Scheme is `http://` or `https://` (blocks `file://`, `gopher://`, etc.)
 /// 2. Hostname is not on the static blocklist (cloud metadata, loopback, etc.)
 /// 3. Every resolved IP is not loopback, unspecified, or in a private range.
 ///
-/// Must be called **before** any network I/O.
+/// **Warning:** Step 3 uses blocking DNS. Prefer [`check_ssrf_async`] from async code.
 pub fn check_ssrf(url: &str) -> Result<(), String> {
-    // Step 1: scheme gate
+    check_ssrf_pre_dns(url)?;
+    check_ssrf_dns(url)
+}
+
+/// Steps 1 & 2: scheme gate + hostname blocklist (non-blocking).
+fn check_ssrf_pre_dns(url: &str) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Only http:// and https:// URLs are allowed".to_string());
     }
 
     let host = extract_host(url);
+    let hostname = extract_hostname(&host);
 
-    // For IPv6 bracket notation like [::1]:80, extract [::1] as hostname
-    let hostname = if host.starts_with('[') {
-        host.find(']').map(|i| &host[..=i]).unwrap_or(&host)
-    } else {
-        host.split(':').next().unwrap_or(&host)
-    };
-
-    // Step 2: hostname blocklist
     if BLOCKED_HOSTNAMES.contains(&hostname) {
         return Err(format!(
             "SSRF blocked: {hostname} is a restricted hostname"
         ));
     }
 
-    // Step 3: DNS resolution — check every returned IP.
+    Ok(())
+}
+
+/// Step 3: DNS resolution — check every returned IP (blocking I/O).
+fn check_ssrf_dns(url: &str) -> Result<(), String> {
+    let host = extract_host(url);
+    let hostname = extract_hostname(&host);
+
     // SECURITY: Fail-closed — if DNS resolution fails, block the request.
     let port = if url.starts_with("https") { 443 } else { 80 };
     let socket_addr = format!("{hostname}:{port}");
@@ -72,6 +92,15 @@ pub fn check_ssrf(url: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Extract the hostname (without port) from a `host:port` string.
+fn extract_hostname(host: &str) -> &str {
+    if host.starts_with('[') {
+        host.find(']').map(|i| &host[..=i]).unwrap_or(host)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    }
 }
 
 /// Check if an IP address falls in a private/reserved range.
