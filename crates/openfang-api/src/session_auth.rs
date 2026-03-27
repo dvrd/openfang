@@ -1,14 +1,18 @@
 //! Stateless session token authentication for the dashboard.
 //! Tokens are HMAC-SHA256 signed and contain username + expiry.
 
+use argon2::password_hash::SaltString;
+use argon2::{password_hash::PasswordHash, Argon2, PasswordHasher, PasswordVerifier};
+use base64::Engine;
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Create a session token: base64(username:expiry_unix:hmac_hex)
 pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> String {
-    use base64::Engine;
     let expiry = chrono::Utc::now().timestamp() + (ttl_hours as i64 * 3600);
     let payload = format!("{username}:{expiry}");
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
@@ -19,7 +23,6 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
 
 /// Verify a session token. Returns the username if valid and not expired.
 pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
-    use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(token)
         .ok()?;
@@ -40,7 +43,6 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     mac.update(payload.as_bytes());
     let expected_sig = hex::encode(mac.finalize().into_bytes());
 
-    use subtle::ConstantTimeEq;
     if provided_sig.len() != expected_sig.len() {
         return None;
     }
@@ -58,10 +60,6 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
 /// Hash a password with Argon2id and a random 16-byte salt.
 /// Returns a PHC-format string (e.g. "$argon2id$v=19$m=...").
 pub fn hash_password(password: &str) -> String {
-    use argon2::password_hash::SaltString;
-    use argon2::{Argon2, PasswordHasher};
-    use rand::rngs::OsRng;
-
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2
@@ -72,7 +70,6 @@ pub fn hash_password(password: &str) -> String {
 
 /// Hash a password with legacy SHA-256 (unsalted). Used only for backward-compat comparison.
 fn legacy_sha256_hash(password: &str) -> String {
-    use sha2::Digest;
     hex::encode(Sha256::digest(password.as_bytes()))
 }
 
@@ -84,9 +81,6 @@ fn legacy_sha256_hash(password: &str) -> String {
 ///   with a warning logged recommending re-hash
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     if stored_hash.starts_with("$argon2") {
-        use argon2::password_hash::PasswordHash;
-        use argon2::{Argon2, PasswordVerifier};
-
         let parsed = match PasswordHash::new(stored_hash) {
             Ok(h) => h,
             Err(_) => return false,
@@ -101,7 +95,6 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
              Please re-hash with Argon2 for improved security."
         );
         let computed = legacy_sha256_hash(password);
-        use subtle::ConstantTimeEq;
         if computed.len() != stored_hash.len() {
             return false;
         }

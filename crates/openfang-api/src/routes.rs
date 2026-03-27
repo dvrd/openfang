@@ -7320,8 +7320,8 @@ pub async fn set_provider_key(
         );
     }
 
-    // Set env var in current process so detect_auth picks it up
-    std::env::set_var(&env_var, &key);
+    // Store in thread-safe secret store so detect_auth picks it up
+    openfang_types::secret_store::set_secret(&env_var, &key);
 
     // Refresh auth detection
     state
@@ -7491,8 +7491,8 @@ pub async fn delete_provider_key(
         );
     }
 
-    // Remove from process environment
-    std::env::remove_var(&env_var);
+    // Remove from thread-safe secret store
+    openfang_types::secret_store::remove_secret(&env_var);
 
     // Refresh auth detection
     state
@@ -10744,8 +10744,8 @@ pub async fn copilot_oauth_poll(
                 );
             }
 
-            // Set in current process
-            std::env::set_var("GITHUB_TOKEN", access_token.as_str());
+            // Store in thread-safe secret store
+            openfang_types::secret_store::set_secret("GITHUB_TOKEN", access_token.as_str());
 
             // Refresh auth detection
             state

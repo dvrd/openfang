@@ -22,9 +22,12 @@ pub struct WebFetchEngine {
 impl WebFetchEngine {
     /// Create a new fetch engine from config with a shared cache.
     pub fn new(config: WebFetchConfig, cache: Arc<WebCache>) -> Self {
+        // SECURITY: Disable automatic redirects to prevent SSRF bypass via
+        // redirect from an allowed host to internal IPs (e.g. 169.254.169.254).
         let client = reqwest::Client::builder()
             .user_agent(crate::USER_AGENT)
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
             .gzip(true)
             .deflate(true)
             .brotli(true)

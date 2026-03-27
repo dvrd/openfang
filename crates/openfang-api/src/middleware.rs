@@ -109,8 +109,9 @@ pub async fn auth(
         // A2A federation protocol — external agents call these
         || (path == "/.well-known/agent.json" && is_get)
         || path.starts_with("/a2a/")
-        // OAuth callbacks
-        || path.starts_with("/api/providers/");
+        // OAuth callbacks — only the specific Copilot device flow endpoints
+        || path == "/api/providers/github-copilot/oauth/start"
+        || (path.starts_with("/api/providers/github-copilot/oauth/poll/") && is_get);
 
     if is_public {
         return next.run(request).await;
