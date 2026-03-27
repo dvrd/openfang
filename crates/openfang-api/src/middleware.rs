@@ -8,7 +8,9 @@
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
+use sha2::{Sha256, Digest};
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 use tracing::info;
 
 /// Request ID header name (standard).
@@ -88,15 +90,27 @@ pub async fn auth(
     let is_get = method == axum::http::Method::GET;
     let is_options = method == axum::http::Method::OPTIONS;
 
-    // SECURITY: Minimal public allowlist. All other endpoints require auth.
-    // Only truly public resources and OAuth callbacks skip authentication.
+    // SECURITY: Public allowlist. All other endpoints require auth.
+    // Auth endpoints must be public so users can log in.
+    // A2A federation endpoints must be public for inter-agent protocol.
+    // Dashboard read endpoints are public GET-only so the SPA can render.
     let is_public = is_options  // CORS preflight
         || (path == "/" && is_get)
         || (path == "/logo.png" && is_get)
         || (path == "/favicon.ico" && is_get)
+        || (path == "/manifest.json" && is_get)
+        || (path == "/sw.js" && is_get)
         || (path == "/api/health" && is_get)
         || (path == "/api/version" && is_get)
-        || path.starts_with("/oauth/");
+        // Auth flow — must be reachable without a session
+        || path == "/api/auth/login"
+        || path == "/api/auth/logout"
+        || (path == "/api/auth/check" && is_get)
+        // A2A federation protocol — external agents call these
+        || (path == "/.well-known/agent.json" && is_get)
+        || path.starts_with("/a2a/")
+        // OAuth callbacks
+        || path.starts_with("/api/providers/");
 
     if is_public {
         return next.run(request).await;
@@ -126,15 +140,7 @@ pub async fn auth(
     });
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    // Hash both values first so the comparison is always on fixed-length
-    // digests, preventing length-leaking short-circuit.
-    let header_auth = api_token.map(|token| {
-        use sha2::{Sha256, Digest};
-        use subtle::ConstantTimeEq;
-        let token_hash = Sha256::digest(token.as_bytes());
-        let key_hash = Sha256::digest(api_key.as_bytes());
-        token_hash.ct_eq(&key_hash).into()
-    });
+    let header_auth = api_token.map(|token| constant_time_key_match(token, api_key));
 
     // WARNING: ?token= in the URL leaks the API key to browser history, server
     // logs, and any intermediary proxies. This is a fallback for clients that
@@ -155,15 +161,7 @@ pub async fn auth(
     }
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    // Hash both values first so the comparison is always on fixed-length
-    // digests, preventing length-leaking short-circuit.
-    let query_auth = query_token.map(|token| {
-        use sha2::{Sha256, Digest};
-        use subtle::ConstantTimeEq;
-        let token_hash = Sha256::digest(token.as_bytes());
-        let key_hash = Sha256::digest(api_key.as_bytes());
-        token_hash.ct_eq(&key_hash).into()
-    });
+    let query_auth = query_token.map(|token| constant_time_key_match(token, api_key));
 
     // Accept if either auth method matches
     if header_auth == Some(true) || query_auth == Some(true) {
@@ -196,6 +194,15 @@ pub async fn auth(
             serde_json::json!({"error": error_msg}).to_string(),
         ))
         .unwrap_or_default()
+}
+
+/// Constant-time comparison of a candidate token against the expected API key.
+/// Hashes both values first so the comparison is always on fixed-length digests,
+/// preventing length-leaking short-circuit.
+fn constant_time_key_match(candidate: &str, expected: &str) -> bool {
+    let candidate_hash = Sha256::digest(candidate.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    candidate_hash.ct_eq(&expected_hash).into()
 }
 
 /// Extract the `openfang_session` cookie value from a request.
