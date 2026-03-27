@@ -4,7 +4,6 @@
 //! runtime, memory substrate, and wire protocol. It contains no business logic.
 
 pub mod agent;
-pub mod secret_store;
 pub mod approval;
 pub mod capability;
 pub mod comms;
@@ -17,6 +16,7 @@ pub mod memory;
 pub mod message;
 pub mod model_catalog;
 pub mod scheduler;
+pub mod secret_store;
 pub mod serde_compat;
 pub mod taint;
 pub mod tool;

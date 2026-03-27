@@ -28,7 +28,7 @@ pub fn remove_secret(key: &str) {
 
 /// Retrieve a secret.  Returns `None` if the key was never stored.
 pub fn get_secret(key: &str) -> Option<String> {
-    store().get(key).map(|v| v.clone())
+    store().get(key).map(|r| r.value().clone())
 }
 
 /// Retrieve a secret, falling back to the process environment.

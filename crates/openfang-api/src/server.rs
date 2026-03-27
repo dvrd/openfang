@@ -56,9 +56,18 @@ pub async fn build_router(
         budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
+    // Shared CORS methods and headers for both auth modes.
+    let cors_methods = [Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS];
+    let cors_headers = [
+        HeaderName::from_static("authorization"),
+        HeaderName::from_static("content-type"),
+        HeaderName::from_static("x-api-key"),
+        HeaderName::from_static("x-request-id"),
+    ];
+
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.
-    let cors = if state.kernel.config.api_key.trim().is_empty() {
+    let cors_origins = if state.kernel.config.api_key.trim().is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
         let mut origins: Vec<axum::http::HeaderValue> = vec![
@@ -76,15 +85,7 @@ pub async fn build_router(
                 }
             }
         }
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
-            .allow_headers([
-                HeaderName::from_static("authorization"),
-                HeaderName::from_static("content-type"),
-                HeaderName::from_static("x-api-key"),
-                HeaderName::from_static("x-request-id"),
-            ])
+        origins
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
         // SECURITY: CorsLayer::permissive() is dangerous — any website could
@@ -105,16 +106,12 @@ pub async fn build_router(
                 origins.push(v);
             }
         }
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
-            .allow_headers([
-                HeaderName::from_static("authorization"),
-                HeaderName::from_static("content-type"),
-                HeaderName::from_static("x-api-key"),
-                HeaderName::from_static("x-request-id"),
-            ])
+        origins
     };
+    let cors = CorsLayer::new()
+        .allow_origin(cors_origins)
+        .allow_methods(cors_methods)
+        .allow_headers(cors_headers);
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
