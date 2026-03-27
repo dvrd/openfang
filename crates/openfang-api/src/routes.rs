@@ -6554,6 +6554,16 @@ pub async fn a2a_discover_external(
         }
     };
 
+    // SECURITY: SSRF check on user-supplied URL — prevents probing internal
+    // services (e.g. cloud IMDS). tool_runner's tool_a2a_discover already does
+    // this, but the API route was missing it.
+    if let Err(e) = openfang_runtime::ssrf::check_ssrf_async(&url).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
+    }
+
     let client = openfang_runtime::a2a::A2aClient::new();
     match client.discover(&url).await {
         Ok(card) => {
@@ -7805,6 +7815,22 @@ pub async fn create_skill(
 /// Write or update a key in the secrets.env file.
 /// File format: one `KEY=value` per line. Existing keys are overwritten.
 fn write_secret_env(path: &std::path::Path, key: &str, value: &str) -> Result<(), std::io::Error> {
+    // SECURITY: Reject control characters that could inject additional env lines.
+    // A value containing '\n' would create a new KEY=VALUE line in secrets.env,
+    // potentially overwriting other secrets.
+    if key.contains(['\n', '\r', '\0', '=']) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Secret key contains forbidden characters",
+        ));
+    }
+    if value.contains(['\n', '\r', '\0']) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Secret value contains forbidden characters (newline/null)",
+        ));
+    }
+
     let mut lines: Vec<String> = if path.exists() {
         std::fs::read_to_string(path)?
             .lines()
@@ -10633,11 +10659,16 @@ fn validate_webhook_token(headers: &axum::http::HeaderMap, token_env: &str) -> b
         None => return false,
     };
 
+    // SECURITY: Hash both sides to fixed-length digests before comparison.
+    // This prevents length-leaking timing side-channels (the previous len != len
+    // check short-circuited before the constant-time path, letting an attacker
+    // binary-search the token length). Same pattern as constant_time_key_match
+    // in middleware.rs.
+    use sha2::{Sha256, Digest};
     use subtle::ConstantTimeEq;
-    if provided.len() != expected.len() {
-        return false;
-    }
-    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+    let provided_hash = Sha256::digest(provided.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    provided_hash.ct_eq(&expected_hash).into()
 }
 
 // ══════════════════════════════════════════════════════════════════════

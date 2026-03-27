@@ -15,7 +15,8 @@ ENV CARGO_PROFILE_RELEASE_LTO=${LTO} \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CODEGEN_UNITS}
 RUN cargo build --release --bin openfang
 
-FROM rust:1-slim-bookworm
+# SECURITY: Use minimal base image for runtime — no Rust toolchain, no compiler.
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3 \

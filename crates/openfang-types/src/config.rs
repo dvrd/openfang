@@ -1140,6 +1140,10 @@ pub struct AuthConfig {
     pub password_hash: String,
     /// Session token lifetime in hours (default: 168 = 7 days).
     pub session_ttl_hours: u64,
+    /// HMAC session signing secret (hex-encoded, >= 32 bytes recommended).
+    /// If empty, a random secret is generated at each startup (sessions do not
+    /// persist across restarts or work in multi-instance deployments).
+    pub session_secret: String,
 }
 
 impl Default for AuthConfig {
@@ -1149,6 +1153,7 @@ impl Default for AuthConfig {
             username: "admin".to_string(),
             password_hash: String::new(),
             session_ttl_hours: 168,
+            session_secret: String::new(),
         }
     }
 }

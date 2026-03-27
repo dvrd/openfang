@@ -115,13 +115,44 @@ pub async fn build_router(
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
-    // Generate a random 32-byte session signing secret at startup.
-    // This must NOT reuse the API key — the session secret is a separate concern.
+
+    // SECURITY: Warn when no auth is configured and bind is not loopback-only.
+    if api_key.is_empty() && !state.kernel.config.auth.enabled {
+        let bind = &state.kernel.config.api_listen;
+        if !bind.starts_with("127.") && !bind.starts_with("localhost") {
+            tracing::warn!(
+                bind = %bind,
+                "No API key or dashboard auth configured — all endpoints are open. \
+                 Set api_key or [auth] in config.toml to secure this instance."
+            );
+        }
+    }
+
+    // Use config-provided session secret, or generate a random one.
+    // A persistent secret allows sessions to survive restarts and works in
+    // multi-instance deployments behind a load balancer.
     let session_secret = {
-        use rand::RngCore;
-        let mut buf = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut buf);
-        hex::encode(buf)
+        let configured = state.kernel.config.auth.session_secret.trim().to_string();
+        if configured.is_empty() {
+            use rand::RngCore;
+            let mut buf = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut buf);
+            if state.kernel.config.auth.enabled {
+                tracing::info!(
+                    "No session_secret in [auth] config — using ephemeral secret. \
+                     Sessions will not persist across restarts."
+                );
+            }
+            hex::encode(buf)
+        } else if configured.len() < 32 {
+            tracing::warn!(
+                "auth.session_secret is shorter than 32 characters — \
+                 this is weak. Use at least 32 hex characters for security."
+            );
+            configured
+        } else {
+            configured
+        }
     };
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
