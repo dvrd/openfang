@@ -2596,10 +2596,7 @@ pub async fn configure_channel(
                     Json(serde_json::json!({"error": format!("Failed to write secret: {e}")})),
                 );
             }
-            // SAFETY: We are the only writer; this is a single-threaded config operation
-            unsafe {
-                std::env::set_var(env_var, value);
-            }
+            openfang_types::secret_store::set_secret(env_var, value);
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
             config_fields.insert(
@@ -2680,10 +2677,7 @@ pub async fn remove_channel(
     for field_def in meta.fields {
         if let Some(env_var) = field_def.env_var {
             let _ = remove_secret_env(&secrets_path, env_var);
-            // SAFETY: Single-threaded config operation
-            unsafe {
-                std::env::remove_var(env_var);
-            }
+            openfang_types::secret_store::remove_secret(env_var);
         }
     }
 
@@ -10668,7 +10662,7 @@ pub async fn copilot_oauth_start() -> impl IntoResponse {
     // Clean up expired flows first
     COPILOT_FLOWS.retain(|_, state| state.expires_at > Instant::now());
 
-    match openfang_runtime::copilot_oauth::start_device_flow().await {
+    match openfang_runtime::copilot_oauth::start_device_flow(None).await {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
 
@@ -10730,7 +10724,7 @@ pub async fn copilot_oauth_poll(
     let device_code = flow.device_code.clone();
     drop(flow);
 
-    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code).await {
+    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code, None).await {
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending"})),

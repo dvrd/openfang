@@ -86,48 +86,17 @@ pub async fn auth(
     // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
     // unauthenticated writes (cron job creation, skill install, etc.).
     let is_get = method == axum::http::Method::GET;
-    let is_public = path == "/"
-        || path == "/logo.png"
-        || path == "/favicon.ico"
-        || (path == "/.well-known/agent.json" && is_get)
-        || (path.starts_with("/a2a/") && is_get)
-        || path == "/api/health"
-        || path == "/api/health/detail"
-        || path == "/api/status"
-        || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/")
-        || path == "/api/auth/login"
-        || path == "/api/auth/logout"
-        || (path == "/api/auth/check" && is_get);
+    let is_options = method == axum::http::Method::OPTIONS;
+
+    // SECURITY: Minimal public allowlist. All other endpoints require auth.
+    // Only truly public resources and OAuth callbacks skip authentication.
+    let is_public = is_options  // CORS preflight
+        || (path == "/" && is_get)
+        || (path == "/logo.png" && is_get)
+        || (path == "/favicon.ico" && is_get)
+        || (path == "/api/health" && is_get)
+        || (path == "/api/version" && is_get)
+        || path.starts_with("/oauth/");
 
     if is_public {
         return next.run(request).await;
@@ -157,28 +126,43 @@ pub async fn auth(
     });
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
+    // Hash both values first so the comparison is always on fixed-length
+    // digests, preventing length-leaking short-circuit.
     let header_auth = api_token.map(|token| {
+        use sha2::{Sha256, Digest};
         use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
+        let token_hash = Sha256::digest(token.as_bytes());
+        let key_hash = Sha256::digest(api_key.as_bytes());
+        token_hash.ct_eq(&key_hash).into()
     });
 
-    // Also check ?token= query parameter (for EventSource/SSE clients that
-    // cannot set custom headers, same approach as WebSocket auth).
+    // WARNING: ?token= in the URL leaks the API key to browser history, server
+    // logs, and any intermediary proxies. This is a fallback for clients that
+    // cannot set HTTP headers (e.g. EventSource/SSE, WebSocket from browsers).
+    // Prefer the Authorization: Bearer <key> header whenever possible.
+    // TODO: Replace ?token= with short-lived session tokens to limit exposure.
     let query_token = request
         .uri()
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
 
+    if query_token.is_some() {
+        tracing::warn!(
+            path = %path,
+            "API key passed via ?token= query parameter — this leaks the key to logs and proxies. \
+             Use the Authorization: Bearer <key> header instead."
+        );
+    }
+
     // SECURITY: Use constant-time comparison to prevent timing attacks.
+    // Hash both values first so the comparison is always on fixed-length
+    // digests, preventing length-leaking short-circuit.
     let query_auth = query_token.map(|token| {
+        use sha2::{Sha256, Digest};
         use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
+        let token_hash = Sha256::digest(token.as_bytes());
+        let key_hash = Sha256::digest(api_key.as_bytes());
+        token_hash.ct_eq(&key_hash).into()
     });
 
     // Accept if either auth method matches

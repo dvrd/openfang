@@ -17,6 +17,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use axum::http::{HeaderName, Method};
+
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct DaemonInfo {
@@ -76,8 +78,13 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
+            .allow_headers([
+                HeaderName::from_static("authorization"),
+                HeaderName::from_static("content-type"),
+                HeaderName::from_static("x-api-key"),
+                HeaderName::from_static("x-request-id"),
+            ])
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
         // SECURITY: CorsLayer::permissive() is dangerous — any website could
@@ -100,22 +107,29 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
+            .allow_headers([
+                HeaderName::from_static("authorization"),
+                HeaderName::from_static("content-type"),
+                HeaderName::from_static("x-api-key"),
+                HeaderName::from_static("x-request-id"),
+            ])
     };
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
+    // Generate a random 32-byte session signing secret at startup.
+    // This must NOT reuse the API key — the session secret is a separate concern.
+    let session_secret = {
+        use rand::RngCore;
+        let mut buf = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut buf);
+        hex::encode(buf)
+    };
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
         auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
-        } else {
-            String::new()
-        },
+        session_secret,
     };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 

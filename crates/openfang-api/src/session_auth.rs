@@ -55,20 +55,58 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     }
 }
 
-/// Hash a password with SHA256 for config storage.
+/// Hash a password with Argon2id and a random 16-byte salt.
+/// Returns a PHC-format string (e.g. "$argon2id$v=19$m=...").
 pub fn hash_password(password: &str) -> String {
+    use argon2::password_hash::SaltString;
+    use argon2::{Argon2, PasswordHasher};
+    use rand::rngs::OsRng;
+
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Argon2 hashing failed")
+        .to_string()
+}
+
+/// Hash a password with legacy SHA-256 (unsalted). Used only for backward-compat comparison.
+fn legacy_sha256_hash(password: &str) -> String {
     use sha2::Digest;
     hex::encode(Sha256::digest(password.as_bytes()))
 }
 
-/// Verify a password against a stored SHA256 hash (constant-time).
+/// Verify a password against a stored hash.
+///
+/// Supports both formats:
+/// - Argon2 PHC strings (starting with "$argon2") — verified via argon2
+/// - Legacy hex-encoded SHA-256 hashes — verified via constant-time comparison
+///   with a warning logged recommending re-hash
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    let computed = hash_password(password);
-    use subtle::ConstantTimeEq;
-    if computed.len() != stored_hash.len() {
-        return false;
+    if stored_hash.starts_with("$argon2") {
+        use argon2::password_hash::PasswordHash;
+        use argon2::{Argon2, PasswordVerifier};
+
+        let parsed = match PasswordHash::new(stored_hash) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
+    } else {
+        // Legacy SHA-256 path
+        tracing::warn!(
+            "Password hash is legacy SHA-256 (unsalted). \
+             Please re-hash with Argon2 for improved security."
+        );
+        let computed = legacy_sha256_hash(password);
+        use subtle::ConstantTimeEq;
+        if computed.len() != stored_hash.len() {
+            return false;
+        }
+        computed.as_bytes().ct_eq(stored_hash.as_bytes()).into()
     }
-    computed.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }
 
 #[cfg(test)]
@@ -76,10 +114,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hash_and_verify_password() {
+    fn test_hash_and_verify_password_argon2() {
         let hash = hash_password("secret123");
+        assert!(hash.starts_with("$argon2"));
         assert!(verify_password("secret123", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn test_verify_legacy_sha256_password() {
+        // Simulate a legacy SHA-256 hash stored in config
+        let legacy_hash = legacy_sha256_hash("secret123");
+        assert!(!legacy_hash.starts_with("$argon2"));
+        assert!(verify_password("secret123", &legacy_hash));
+        assert!(!verify_password("wrong", &legacy_hash));
     }
 
     #[test]
@@ -103,7 +151,12 @@ mod tests {
     }
 
     #[test]
-    fn test_password_hash_length_mismatch() {
+    fn test_password_hash_length_mismatch_legacy() {
         assert!(!verify_password("x", "short"));
+    }
+
+    #[test]
+    fn test_verify_invalid_argon2_hash() {
+        assert!(!verify_password("x", "$argon2id$invalid$garbage"));
     }
 }
