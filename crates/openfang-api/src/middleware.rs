@@ -6,9 +6,9 @@
 //! - In-memory rate limiting (per IP)
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{HeaderValue, Request, Response, StatusCode};
 use axum::middleware::Next;
-use sha2::{Sha256, Digest};
+use sha2::{Sha256, Digest}; // constant-time auth: sha2 + subtle used together
 use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tracing::info;
@@ -69,8 +69,21 @@ pub async fn auth(
     // SECURITY: Capture method early for method-aware public endpoint checks.
     let method = request.method().clone();
 
-    // Shutdown is loopback-only (CLI on same machine) — skip token auth
+    // SECURITY: Reject path-traversal sequences before any allowlist check.
+    // Without this, a raw path like /a2a/../api/admin would pass starts_with("/a2a/")
+    // in the public allowlist below, while the router resolves it to /api/admin.
     let path = request.uri().path();
+    if path.contains("/../")
+        || path.ends_with("/..")
+        || path.contains("%2e%2e")
+        || path.contains("%2E%2E")
+        || path.contains("%2F")  // encoded slash — can be used to hide traversal
+    {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::from(r#"{"error":"Invalid path"}"#))
+            .unwrap_or_default();
+    }
     if path == "/api/shutdown" {
         let is_loopback = request
             .extensions()
@@ -226,30 +239,30 @@ fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
 pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    headers.insert("x-frame-options", "DENY".parse().unwrap());
-    headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
+    // Use HeaderValue::from_static for compile-time-validated static values.
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    // Note: x-xss-protection is deprecated in all modern browsers and omitted.
+    // Content-Security-Policy (below) is the correct mitigation for XSS.
     // The dashboard handler (webchat_page) sets its own nonce-based CSP.
     // For all other responses (API endpoints), apply a strict default.
     if !headers.contains_key("content-security-policy") {
         headers.insert(
             "content-security-policy",
-            "default-src 'none'; frame-ancestors 'none'"
-                .parse()
-                .unwrap(),
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
         );
     }
     headers.insert(
         "referrer-policy",
-        "strict-origin-when-cross-origin".parse().unwrap(),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
     headers.insert(
         "cache-control",
-        "no-store, no-cache, must-revalidate".parse().unwrap(),
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
     );
     headers.insert(
         "strict-transport-security",
-        "max-age=63072000; includeSubDomains".parse().unwrap(),
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
     response
 }

@@ -369,10 +369,12 @@ fn detect_audio_provider() -> Option<&'static str> {
     if std::env::var("OPENFANG_ENABLE_PARAKEET_MLX").is_ok() {
         return Some("parakeet-mlx");
     }
-    if std::env::var("GROQ_API_KEY").is_ok() {
+    // Use get_secret_or_env so runtime-configured secrets (set via secret_store)
+    // are visible here — consistent with detect_vision_provider.
+    if openfang_types::secret_store::get_secret_or_env("GROQ_API_KEY").is_some() {
         return Some("groq");
     }
-    if std::env::var("OPENAI_API_KEY").is_ok() {
+    if openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY").is_some() {
         return Some("openai");
     }
     None

@@ -14,7 +14,7 @@ pub async fn check_ssrf_async(url: &str) -> Result<(), String> {
     let host = validate_pre_dns(url)?;
 
     // Step 3: DNS resolution — offload to blocking thread pool.
-    let is_https = url.starts_with("https");
+    let is_https = url.starts_with("https://");
     tokio::task::spawn_blocking(move || validate_dns(&host, is_https))
         .await
         .map_err(|e| format!("SSRF check task failed: {e}"))?
@@ -25,6 +25,7 @@ pub async fn check_ssrf_async(url: &str) -> Result<(), String> {
 const BLOCKED_HOSTNAMES: &[&str] = &[
     "localhost",
     "ip6-localhost",
+    "ip6-loopback", // Debian/Ubuntu /etc/hosts alias for ::1
     "metadata.google.internal",
     "metadata.aws.internal",
     "instance-data",
@@ -48,7 +49,7 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
 /// **Warning:** Step 3 uses blocking DNS. Prefer [`check_ssrf_async`] from async code.
 pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
     let host = validate_pre_dns(url)?;
-    let is_https = url.starts_with("https");
+    let is_https = url.starts_with("https://");
     validate_dns(&host, is_https)
 }
 
@@ -56,7 +57,7 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
 /// Returns the `host:port` string for reuse by DNS validation.
 fn validate_pre_dns(url: &str) -> Result<String, String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("Only http:// and https:// URLs are allowed".to_string());
+        return Err("SSRF blocked: only http:// and https:// URLs are allowed".to_string());
     }
 
     let host = extract_host(url);
@@ -114,7 +115,8 @@ fn extract_hostname(host: &str) -> &str {
 /// Check if an IP address falls in a private/reserved range.
 ///
 /// IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 (link-local)
-/// IPv6: fc00::/7 (ULA), fe80::/10 (link-local)
+/// IPv6: fc00::/7 (ULA), fe80::/10 (link-local), 2002::/16 (6to4 with private embedded IPv4),
+///       2001::/32 (Teredo — blocked entirely as it can tunnel private IPv4)
 pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -133,7 +135,29 @@ pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
                     || is_private_ip(&IpAddr::V4(mapped_v4));
             }
             let segments = v6.segments();
-            (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+            // ULA (fc00::/7) and link-local (fe80::/10)
+            if (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // SECURITY: 6to4 (2002::/16) — the embedded IPv4 address is in segments [1..2].
+            // e.g. 2002:7f00:0001:: embeds 127.0.0.1.
+            if segments[0] == 0x2002 {
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[1] >> 8) as u8,
+                    segments[1] as u8,
+                    (segments[2] >> 8) as u8,
+                    segments[2] as u8,
+                );
+                return embedded.is_loopback()
+                    || embedded.is_unspecified()
+                    || is_private_ip(&IpAddr::V4(embedded));
+            }
+            // SECURITY: Teredo (2001:0000::/32) — tunnels UDP/IPv4 and can target
+            // private addresses. Block the entire /32 as an SSRF risk.
+            if segments[0] == 0x2001 && segments[1] == 0x0000 {
+                return true;
+            }
+            false
         }
     }
 }
@@ -141,10 +165,30 @@ pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
 /// Extract `host:port` from a URL string.
 ///
 /// Handles IPv6 bracket notation (`[::1]:8080`), explicit ports, and
-/// defaults to 443 for `https` / 80 for `http`.
+/// defaults to 443 for `https://` / 80 for `http://`.
+///
+/// Security: strips userinfo (`user@host`), query (`?…`), and fragment (`#…`)
+/// from the authority before returning, so blocklist comparisons see only the
+/// bare hostname.
 pub(crate) fn extract_host(url: &str) -> String {
     if let Some(after_scheme) = url.split("://").nth(1) {
-        let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+        // SECURITY: Isolate the authority by splitting at the first path, query,
+        // or fragment delimiter. This prevents query/fragment characters from
+        // leaking into the hostname and bypassing blocklist checks.
+        let authority = after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(after_scheme);
+
+        // SECURITY: Strip userinfo (anything before the last '@' in the authority).
+        // e.g. "attacker@169.254.169.254" → "169.254.169.254".
+        // We search within authority only (path/query/fragment already stripped).
+        let host_port = if let Some(at) = authority.rfind('@') {
+            &authority[at + 1..]
+        } else {
+            authority
+        };
+
         // Handle IPv6 bracket notation: [::1]:8080
         if host_port.starts_with('[') {
             if let Some(bracket_end) = host_port.find(']') {
@@ -153,13 +197,13 @@ pub(crate) fn extract_host(url: &str) -> String {
                 if let Some(port) = after_bracket.strip_prefix(':') {
                     return format!("{ipv6_host}:{port}");
                 }
-                let default_port = if url.starts_with("https") { 443 } else { 80 };
+                let default_port = if url.starts_with("https://") { 443 } else { 80 };
                 return format!("{ipv6_host}:{default_port}");
             }
         }
         if host_port.contains(':') {
             host_port.to_string()
-        } else if url.starts_with("https") {
+        } else if url.starts_with("https://") {
             format!("{host_port}:443")
         } else {
             format!("{host_port}:80")
@@ -268,5 +312,46 @@ mod tests {
         assert_eq!(extract_host("http://[::1]:8080/path"), "[::1]:8080");
         assert_eq!(extract_host("https://[::1]/path"), "[::1]:443");
         assert_eq!(extract_host("http://[::1]/path"), "[::1]:80");
+    }
+
+    #[test]
+    fn test_extract_host_strips_userinfo() {
+        // userinfo@ must be stripped so blocklist sees the real hostname
+        assert_eq!(extract_host("http://attacker@example.com/path"), "example.com:80");
+        assert_eq!(extract_host("https://user:pass@example.com/"), "example.com:443");
+    }
+
+    #[test]
+    fn test_extract_host_strips_query_and_fragment() {
+        // query and fragment must not contaminate the host
+        assert_eq!(extract_host("http://example.com?foo=bar"), "example.com:80");
+        assert_eq!(extract_host("http://example.com#section"), "example.com:80");
+        assert_eq!(extract_host("https://example.com?a=1#b"), "example.com:443");
+    }
+
+    #[test]
+    fn test_ssrf_blocks_userinfo_bypass() {
+        // attacker@ userinfo should not bypass the IMDS blocklist check
+        assert!(check_ssrf("http://attacker@169.254.169.254/").is_err());
+        assert!(check_ssrf("http://user@localhost/admin").is_err());
+    }
+
+    #[test]
+    fn test_ssrf_blocks_non_http_schemes() {
+        // Scheme gate error message must carry the "SSRF blocked:" prefix
+        let err = check_ssrf("file:///etc/passwd").unwrap_err();
+        assert!(err.starts_with("SSRF blocked:"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn test_private_ip_v6_6to4_teredo() {
+        // 6to4 with embedded loopback: 2002:7f00:0001:: → 127.0.0.1
+        assert!(is_private_ip(&"2002:7f00:0001::".parse::<IpAddr>().unwrap()));
+        // 6to4 with embedded private: 2002:c0a8:0101:: → 192.168.1.1
+        assert!(is_private_ip(&"2002:c0a8:0101::".parse::<IpAddr>().unwrap()));
+        // 6to4 with public embedded IPv4: 2002:0808:0808:: → 8.8.8.8 — NOT blocked
+        assert!(!is_private_ip(&"2002:0808:0808::".parse::<IpAddr>().unwrap()));
+        // Teredo: 2001:0000::/32 — blocked
+        assert!(is_private_ip(&"2001:0000:4136:e378::".parse::<IpAddr>().unwrap()));
     }
 }

@@ -22,16 +22,24 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
 }
 
 /// Verify a session token. Returns the username if valid and not expired.
+///
+/// Parses from the right: signature is hex (no `:`), expiry is digits (no `:`),
+/// so `rfind(':')` correctly handles usernames that contain `:`.
 pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(token)
         .ok()?;
     let decoded_str = String::from_utf8(decoded).ok()?;
-    let parts: Vec<&str> = decoded_str.splitn(3, ':').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let (username, expiry_str, provided_sig) = (parts[0], parts[1], parts[2]);
+
+    // Parse right-to-left: sig is the last field, expiry is the second-to-last.
+    // This correctly handles usernames that contain ':'.
+    let sig_sep = decoded_str.rfind(':')?;
+    let provided_sig = &decoded_str[sig_sep + 1..];
+    let before_sig = &decoded_str[..sig_sep];
+
+    let expiry_sep = before_sig.rfind(':')?;
+    let expiry_str = &before_sig[expiry_sep + 1..];
+    let username = &before_sig[..expiry_sep];
 
     let expiry: i64 = expiry_str.parse().ok()?;
     if chrono::Utc::now().timestamp() > expiry {
@@ -141,6 +149,14 @@ mod tests {
     fn test_token_invalid_base64() {
         let user = verify_session_token("not-valid-base64!!!", "secret");
         assert_eq!(user, None);
+    }
+
+    #[test]
+    fn test_token_username_with_colon() {
+        // Usernames containing ':' must round-trip correctly.
+        let token = create_session_token("user:name", "my-secret", 1);
+        let user = verify_session_token(&token, "my-secret");
+        assert_eq!(user, Some("user:name".to_string()));
     }
 
     #[test]

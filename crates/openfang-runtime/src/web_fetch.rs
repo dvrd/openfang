@@ -186,7 +186,6 @@ fn is_html(content_type: &str, body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::ssrf::check_ssrf;
     use crate::str_utils::safe_truncate_str;
 
