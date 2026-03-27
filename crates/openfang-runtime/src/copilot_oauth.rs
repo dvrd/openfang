@@ -5,7 +5,16 @@
 //! Once complete, the resulting access token can be used with the CopilotDriver.
 
 use serde::Deserialize;
+use std::sync::LazyLock;
 use zeroize::Zeroizing;
+
+/// Shared HTTP client for OAuth requests — avoids rebuilding per call.
+static OAUTH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default()
+});
 
 /// GitHub device code request URL.
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -50,12 +59,7 @@ pub enum DeviceFlowStatus {
 /// If `client_id` is `None`, falls back to the built-in `COPILOT_CLIENT_ID`.
 pub async fn start_device_flow(client_id: Option<&str>) -> Result<DeviceCodeResponse, String> {
     let client_id = client_id.unwrap_or(COPILOT_CLIENT_ID);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let resp = client
+    let resp = OAUTH_CLIENT
         .post(GITHUB_DEVICE_CODE_URL)
         .header("Accept", "application/json")
         .form(&[("client_id", client_id), ("scope", "read:user")])
@@ -82,15 +86,7 @@ pub async fn start_device_flow(client_id: Option<&str>) -> Result<DeviceCodeResp
 /// If `client_id` is `None`, falls back to the built-in `COPILOT_CLIENT_ID`.
 pub async fn poll_device_flow(device_code: &str, client_id: Option<&str>) -> DeviceFlowStatus {
     let client_id = client_id.unwrap_or(COPILOT_CLIENT_ID);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return DeviceFlowStatus::Error(format!("HTTP client error: {e}")),
-    };
-
-    let resp = match client
+    let resp = match OAUTH_CLIENT
         .post(GITHUB_TOKEN_URL)
         .header("Accept", "application/json")
         .form(&[

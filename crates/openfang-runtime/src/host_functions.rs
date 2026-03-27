@@ -11,7 +11,17 @@ use crate::ssrf::{check_ssrf, extract_host};
 use openfang_types::capability::{capability_matches, Capability};
 use serde_json::json;
 use std::path::{Component, Path};
+use std::sync::LazyLock;
 use tracing::debug;
+
+/// Shared HTTP client for WASM sandbox network requests.
+/// SECURITY: Redirects disabled to prevent SSRF bypass via redirect to internal IPs.
+static SANDBOX_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+});
 
 /// Dispatch a host call to the appropriate handler.
 ///
@@ -242,17 +252,11 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     state.tokio_handle.block_on(async {
-        // SECURITY: Disable automatic redirects to prevent SSRF bypass via
-        // redirect from allowed host to internal IP (e.g. 169.254.169.254).
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
         let request = match method.to_uppercase().as_str() {
-            "POST" => client.post(url).body(body.to_string()),
-            "PUT" => client.put(url).body(body.to_string()),
-            "DELETE" => client.delete(url),
-            _ => client.get(url),
+            "POST" => SANDBOX_CLIENT.post(url).body(body.to_string()),
+            "PUT" => SANDBOX_CLIENT.put(url).body(body.to_string()),
+            "DELETE" => SANDBOX_CLIENT.delete(url),
+            _ => SANDBOX_CLIENT.get(url),
         };
         match request.send().await {
             Ok(resp) => {

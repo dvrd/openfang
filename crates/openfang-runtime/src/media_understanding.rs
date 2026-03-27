@@ -5,9 +5,17 @@
 use openfang_types::media::{
     MediaAttachment, MediaConfig, MediaSource, MediaType, MediaUnderstanding,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::Semaphore;
 use tracing::info;
+
+/// Shared HTTP client for transcription requests.
+static MEDIA_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default()
+});
 
 /// Media understanding engine.
 pub struct MediaEngine {
@@ -139,12 +147,10 @@ impl MediaEngine {
             .text("model", model.to_string())
             .text("response_format", "text");
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = MEDIA_CLIENT
             .post(api_url)
             .bearer_auth(&api_key)
             .multipart(form)
-            .timeout(std::time::Duration::from_secs(60))
             .send()
             .await
             .map_err(|e| format!("Transcription request failed: {}", e))?;
