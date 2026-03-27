@@ -556,14 +556,12 @@ impl McpConnection {
     }
 
     async fn connect_sse(url: &str) -> Result<McpTransportHandle, String> {
-        // Basic SSRF check: reject obviously private URLs
-        let lower = url.to_lowercase();
-        if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
-            return Err("SSRF: MCP SSE URL targets metadata endpoint".to_string());
-        }
+        // SSRF protection — full check via shared module
+        crate::ssrf::check_ssrf_async(url).await?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 

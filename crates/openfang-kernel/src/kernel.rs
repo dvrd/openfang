@@ -5771,8 +5771,13 @@ async fn cron_deliver_response(
         }
         CronDelivery::Webhook { url } => {
             tracing::debug!(url = %url, "Cron: delivering via webhook");
+            // SSRF protection — prevent webhooks targeting internal networks
+            openfang_runtime::ssrf::check_ssrf_async(url)
+                .await
+                .map_err(|e| format!("webhook SSRF check failed: {e}"))?;
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| format!("webhook client init failed: {e}"))?;
             let payload = serde_json::json!({

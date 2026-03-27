@@ -1362,11 +1362,14 @@ async fn tool_apply_patch(
 // Web tools
 // ---------------------------------------------------------------------------
 
-/// Legacy web fetch (no SSRF protection, no readability). Used when WebToolsContext is unavailable.
+/// Legacy web fetch (fallback when WebToolsContext is unavailable).
 async fn tool_web_fetch_legacy(input: &serde_json::Value) -> Result<String, String> {
     let url = input["url"].as_str().ok_or("Missing 'url' parameter")?;
+    // SSRF protection — same check as the primary web fetch path
+    crate::ssrf::check_ssrf_async(url).await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
     let resp = client

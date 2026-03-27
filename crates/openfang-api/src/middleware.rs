@@ -106,11 +106,12 @@ pub async fn auth(
         || path == "/api/auth/login"
         || path == "/api/auth/logout"
         || (path == "/api/auth/check" && is_get)
-        // A2A federation protocol — external agents call these
+        // A2A federation protocol — external agents call these.
+        // GET for status/discovery, POST for task submission per A2A spec.
         || (path == "/.well-known/agent.json" && is_get)
-        || path.starts_with("/a2a/")
+        || (path.starts_with("/a2a/") && (is_get || method == axum::http::Method::POST))
         // OAuth callbacks — only the specific Copilot device flow endpoints
-        || path == "/api/providers/github-copilot/oauth/start"
+        || (path == "/api/providers/github-copilot/oauth/start" && method == axum::http::Method::POST)
         || (path.starts_with("/api/providers/github-copilot/oauth/poll/") && is_get);
 
     if is_public {

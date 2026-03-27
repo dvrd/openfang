@@ -9,14 +9,13 @@ use std::net::{IpAddr, ToSocketAddrs};
 /// Async-safe SSRF check — offloads blocking DNS to a thread pool.
 ///
 /// Use this from async contexts (web_fetch, browser, tool_runner).
-/// Falls back to [`check_ssrf`] for the actual validation logic.
 pub async fn check_ssrf_async(url: &str) -> Result<(), String> {
     // Steps 1 & 2 (scheme gate + blocklist) are non-blocking — run inline.
-    check_ssrf_pre_dns(url)?;
+    let host = validate_pre_dns(url)?;
 
     // Step 3: DNS resolution — offload to blocking thread pool.
-    let url_owned = url.to_string();
-    tokio::task::spawn_blocking(move || check_ssrf_dns(&url_owned))
+    let is_https = url.starts_with("https");
+    tokio::task::spawn_blocking(move || validate_dns(&host, is_https))
         .await
         .map_err(|e| format!("SSRF check task failed: {e}"))?
 }
@@ -47,13 +46,15 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
 /// 3. Every resolved IP is not loopback, unspecified, or in a private range.
 ///
 /// **Warning:** Step 3 uses blocking DNS. Prefer [`check_ssrf_async`] from async code.
-pub fn check_ssrf(url: &str) -> Result<(), String> {
-    check_ssrf_pre_dns(url)?;
-    check_ssrf_dns(url)
+pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
+    let host = validate_pre_dns(url)?;
+    let is_https = url.starts_with("https");
+    validate_dns(&host, is_https)
 }
 
 /// Steps 1 & 2: scheme gate + hostname blocklist (non-blocking).
-fn check_ssrf_pre_dns(url: &str) -> Result<(), String> {
+/// Returns the `host:port` string for reuse by DNS validation.
+fn validate_pre_dns(url: &str) -> Result<String, String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Only http:// and https:// URLs are allowed".to_string());
     }
@@ -67,17 +68,24 @@ fn check_ssrf_pre_dns(url: &str) -> Result<(), String> {
         ));
     }
 
-    Ok(())
+    Ok(host)
 }
 
 /// Step 3: DNS resolution — check every returned IP (blocking I/O).
-fn check_ssrf_dns(url: &str) -> Result<(), String> {
-    let host = extract_host(url);
-    let hostname = extract_hostname(&host);
+/// Takes the pre-parsed `host:port` string to avoid re-parsing the URL.
+fn validate_dns(host: &str, is_https: bool) -> Result<(), String> {
+    let hostname = extract_hostname(host);
+
+    // Use the port from the parsed host, or default based on scheme.
+    let socket_addr = if host.contains(':') {
+        host.to_string()
+    } else if is_https {
+        format!("{hostname}:443")
+    } else {
+        format!("{hostname}:80")
+    };
 
     // SECURITY: Fail-closed — if DNS resolution fails, block the request.
-    let port = if url.starts_with("https") { 443 } else { 80 };
-    let socket_addr = format!("{hostname}:{port}");
     let addrs = socket_addr
         .to_socket_addrs()
         .map_err(|e| format!("SSRF blocked: DNS resolution failed for {hostname}: {e}"))?;
