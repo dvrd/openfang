@@ -8,7 +8,8 @@ services:
     build: .
     # image: ghcr.io/rightnow-ai/openfang:latest  # Uncomment when GHCR is public
     ports:
-      - "4200:4200"
+      # Bound to localhost only. To expose to the network, change to "0.0.0.0:4200:4200"
+      - "127.0.0.1:4200:4200"
     volumes:
       - openfang-data:/data
     environment:

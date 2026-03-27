@@ -365,7 +365,7 @@ mod tests {
     fn test_api_key_requires_restart() {
         let a = default_cfg();
         let mut b = default_cfg();
-        b.api_key = "super-secret-key".to_string();
+        b.api_key = zeroize::Zeroizing::new("super-secret-key".to_string());
         let plan = build_reload_plan(&a, &b);
         assert!(plan.restart_required);
         assert!(plan.restart_reasons.iter().any(|r| r.contains("api_key")));

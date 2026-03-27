@@ -1,14 +1,18 @@
 //! Stateless session token authentication for the dashboard.
 //! Tokens are HMAC-SHA256 signed and contain username + expiry.
 
+use argon2::password_hash::SaltString;
+use argon2::{password_hash::PasswordHash, Argon2, PasswordHasher, PasswordVerifier};
+use base64::Engine;
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Create a session token: base64(username:expiry_unix:hmac_hex)
 pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> String {
-    use base64::Engine;
     let expiry = chrono::Utc::now().timestamp() + (ttl_hours as i64 * 3600);
     let payload = format!("{username}:{expiry}");
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
@@ -18,17 +22,30 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
 }
 
 /// Verify a session token. Returns the username if valid and not expired.
+///
+/// Parses from the right: signature is hex (no `:`), expiry is digits (no `:`),
+/// so `rfind(':')` correctly handles usernames that contain `:`.
 pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
-    use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(token)
         .ok()?;
     let decoded_str = String::from_utf8(decoded).ok()?;
-    let parts: Vec<&str> = decoded_str.splitn(3, ':').collect();
-    if parts.len() != 3 {
+
+    // Parse right-to-left: sig is the last field, expiry is the second-to-last.
+    // This correctly handles usernames that contain ':'.
+    let sig_sep = decoded_str.rfind(':')?;
+    let provided_sig = &decoded_str[sig_sep + 1..];
+    let before_sig = &decoded_str[..sig_sep];
+
+    let expiry_sep = before_sig.rfind(':')?;
+    let expiry_str = &before_sig[expiry_sep + 1..];
+    let username = &before_sig[..expiry_sep];
+
+    // Reject tokens with an empty username — a leading ':' in the decoded string
+    // would produce an empty username field which must never match any real user.
+    if username.is_empty() {
         return None;
     }
-    let (username, expiry_str, provided_sig) = (parts[0], parts[1], parts[2]);
 
     let expiry: i64 = expiry_str.parse().ok()?;
     if chrono::Utc::now().timestamp() > expiry {
@@ -40,7 +57,6 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     mac.update(payload.as_bytes());
     let expected_sig = hex::encode(mac.finalize().into_bytes());
 
-    use subtle::ConstantTimeEq;
     if provided_sig.len() != expected_sig.len() {
         return None;
     }
@@ -55,20 +71,49 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     }
 }
 
-/// Hash a password with SHA256 for config storage.
+/// Hash a password with Argon2id and a random 16-byte salt.
+/// Returns a PHC-format string (e.g. "$argon2id$v=19$m=...").
 pub fn hash_password(password: &str) -> String {
-    use sha2::Digest;
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Argon2 hashing failed")
+        .to_string()
+}
+
+/// Hash a password with legacy SHA-256 (unsalted). Used only for backward-compat comparison.
+fn legacy_sha256_hash(password: &str) -> String {
     hex::encode(Sha256::digest(password.as_bytes()))
 }
 
-/// Verify a password against a stored SHA256 hash (constant-time).
+/// Verify a password against a stored hash.
+///
+/// Supports both formats:
+/// - Argon2 PHC strings (starting with "$argon2") — verified via argon2
+/// - Legacy hex-encoded SHA-256 hashes — verified via constant-time comparison
+///   with a warning logged recommending re-hash
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    let computed = hash_password(password);
-    use subtle::ConstantTimeEq;
-    if computed.len() != stored_hash.len() {
-        return false;
+    if stored_hash.starts_with("$argon2") {
+        let parsed = match PasswordHash::new(stored_hash) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
+    } else {
+        // Legacy SHA-256 path
+        tracing::warn!(
+            "Password hash is legacy SHA-256 (unsalted). \
+             Please re-hash with Argon2 for improved security."
+        );
+        let computed = legacy_sha256_hash(password);
+        if computed.len() != stored_hash.len() {
+            return false;
+        }
+        computed.as_bytes().ct_eq(stored_hash.as_bytes()).into()
     }
-    computed.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }
 
 #[cfg(test)]
@@ -76,10 +121,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hash_and_verify_password() {
+    fn test_hash_and_verify_password_argon2() {
         let hash = hash_password("secret123");
+        assert!(hash.starts_with("$argon2"));
         assert!(verify_password("secret123", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn test_verify_legacy_sha256_password() {
+        // Simulate a legacy SHA-256 hash stored in config
+        let legacy_hash = legacy_sha256_hash("secret123");
+        assert!(!legacy_hash.starts_with("$argon2"));
+        assert!(verify_password("secret123", &legacy_hash));
+        assert!(!verify_password("wrong", &legacy_hash));
     }
 
     #[test]
@@ -103,7 +158,20 @@ mod tests {
     }
 
     #[test]
-    fn test_password_hash_length_mismatch() {
+    fn test_token_username_with_colon() {
+        // Usernames containing ':' must round-trip correctly.
+        let token = create_session_token("user:name", "my-secret", 1);
+        let user = verify_session_token(&token, "my-secret");
+        assert_eq!(user, Some("user:name".to_string()));
+    }
+
+    #[test]
+    fn test_password_hash_length_mismatch_legacy() {
         assert!(!verify_password("x", "short"));
+    }
+
+    #[test]
+    fn test_verify_invalid_argon2_hash() {
+        assert!(!verify_password("x", "$argon2id$invalid$garbage"));
     }
 }

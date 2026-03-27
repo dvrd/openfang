@@ -110,7 +110,7 @@ hex = "0.4"
 subtle = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 
 # Rate limiting
 governor = "0.8"

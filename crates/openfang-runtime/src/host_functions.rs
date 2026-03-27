@@ -7,11 +7,21 @@
 //! They receive `&GuestState` (not `&mut`) and return JSON values.
 
 use crate::sandbox::GuestState;
+use crate::ssrf::{check_ssrf, extract_host};
 use openfang_types::capability::{capability_matches, Capability};
 use serde_json::json;
-use std::net::ToSocketAddrs;
 use std::path::{Component, Path};
+use std::sync::LazyLock;
 use tracing::debug;
+
+/// Shared HTTP client for WASM sandbox network requests.
+/// SECURITY: Redirects disabled to prevent SSRF bypass via redirect to internal IPs.
+static SANDBOX_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to build WASM sandbox HTTP client")
+});
 
 /// Dispatch a host call to the appropriate handler.
 ///
@@ -117,62 +127,13 @@ fn safe_resolve_parent(path: &str) -> Result<std::path::PathBuf, serde_json::Val
 }
 
 // ---------------------------------------------------------------------------
-// SSRF protection
+// SSRF protection (delegates to shared crate::ssrf module)
 // ---------------------------------------------------------------------------
 
-/// SSRF protection: check if a hostname resolves to a private/internal IP.
-/// This defeats DNS rebinding by checking the RESOLVED address, not the hostname.
+/// Thin wrapper that converts the shared SSRF check's `String` error
+/// into a JSON error value expected by host-function callers.
 fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
-    // Only allow http:// and https:// schemes (block file://, gopher://, ftp://)
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(json!({"error": "Only http:// and https:// URLs are allowed"}));
-    }
-
-    let host = extract_host_from_url(url);
-    let hostname = host.split(':').next().unwrap_or(&host);
-
-    // Check hostname-based blocklist first (catches metadata endpoints)
-    let blocked_hostnames = [
-        "localhost",
-        "metadata.google.internal",
-        "metadata.aws.internal",
-        "instance-data",
-        "169.254.169.254",
-    ];
-    if blocked_hostnames.contains(&hostname) {
-        return Err(json!({"error": format!("SSRF blocked: {hostname} is a restricted hostname")}));
-    }
-
-    // Resolve DNS and check every returned IP
-    let port = if url.starts_with("https") { 443 } else { 80 };
-    let socket_addr = format!("{hostname}:{port}");
-    if let Ok(addrs) = socket_addr.to_socket_addrs() {
-        for addr in addrs {
-            let ip = addr.ip();
-            if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
-                return Err(json!({"error": format!(
-                    "SSRF blocked: {hostname} resolves to private IP {ip}"
-                )}));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn is_private_ip(ip: &std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            matches!(
-                octets,
-                [10, ..] | [172, 16..=31, ..] | [192, 168, ..] | [169, 254, ..]
-            )
-        }
-        std::net::IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
-        }
-    }
+    check_ssrf(url).map_err(|msg| json!({"error": msg}))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,18 +246,17 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     // Extract host:port from URL for capability check
-    let host = extract_host_from_url(url);
+    let host = extract_host(url);
     if let Err(e) = check_capability(&state.capabilities, &Capability::NetConnect(host)) {
         return e;
     }
 
     state.tokio_handle.block_on(async {
-        let client = reqwest::Client::new();
         let request = match method.to_uppercase().as_str() {
-            "POST" => client.post(url).body(body.to_string()),
-            "PUT" => client.put(url).body(body.to_string()),
-            "DELETE" => client.delete(url),
-            _ => client.get(url),
+            "POST" => SANDBOX_CLIENT.post(url).body(body.to_string()),
+            "PUT" => SANDBOX_CLIENT.put(url).body(body.to_string()),
+            "DELETE" => SANDBOX_CLIENT.delete(url),
+            _ => SANDBOX_CLIENT.get(url),
         };
         match request.send().await {
             Ok(resp) => {
@@ -309,22 +269,6 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
             Err(e) => json!({"error": format!("Request failed: {e}")}),
         }
     })
-}
-
-/// Extract host:port from a URL for capability checking.
-fn extract_host_from_url(url: &str) -> String {
-    if let Some(after_scheme) = url.split("://").nth(1) {
-        let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
-        if host_port.contains(':') {
-            host_port.to_string()
-        } else if url.starts_with("https") {
-            format!("{host_port}:443")
-        } else {
-            format!("{host_port}:80")
-        }
-    } else {
-        url.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -379,9 +323,11 @@ fn host_env_read(state: &GuestState, params: &serde_json::Value) -> serde_json::
     if let Err(e) = check_capability(&state.capabilities, &Capability::EnvRead(name.to_string())) {
         return e;
     }
-    match std::env::var(name) {
-        Ok(val) => json!({"ok": val}),
-        Err(_) => json!({"ok": null}),
+    // Use get_secret_or_env so runtime-configured secrets (set via the UI or
+    // secret_store API) are visible here, not just startup env vars.
+    match openfang_types::secret_store::get_secret_or_env(name) {
+        Some(val) => json!({"ok": val}),
+        None => json!({"ok": null}),
     }
 }
 
@@ -619,50 +565,18 @@ mod tests {
     }
 
     #[test]
-    fn test_ssrf_private_ips_blocked() {
-        assert!(is_ssrf_target("http://127.0.0.1:8080/secret").is_err());
+    fn test_ssrf_wrapper_delegates_to_shared_module() {
+        // Verify the thin wrapper correctly surfaces errors from crate::ssrf
         assert!(is_ssrf_target("http://localhost:3000/api").is_err());
         assert!(is_ssrf_target("http://169.254.169.254/metadata").is_err());
-        assert!(is_ssrf_target("http://metadata.google.internal/v1/instance").is_err());
-    }
-
-    #[test]
-    fn test_ssrf_public_ips_allowed() {
-        assert!(is_ssrf_target("https://api.openai.com/v1/chat").is_ok());
         assert!(is_ssrf_target("https://google.com").is_ok());
-    }
-
-    #[test]
-    fn test_ssrf_scheme_validation() {
         assert!(is_ssrf_target("file:///etc/passwd").is_err());
-        assert!(is_ssrf_target("gopher://evil.com").is_err());
-        assert!(is_ssrf_target("ftp://example.com").is_err());
     }
 
     #[test]
-    fn test_is_private_ip() {
-        use std::net::IpAddr;
-        assert!(is_private_ip(&"10.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"172.16.0.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"192.168.1.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"169.254.169.254".parse::<IpAddr>().unwrap()));
-        assert!(!is_private_ip(&"8.8.8.8".parse::<IpAddr>().unwrap()));
-        assert!(!is_private_ip(&"1.1.1.1".parse::<IpAddr>().unwrap()));
-    }
-
-    #[test]
-    fn test_extract_host_from_url() {
-        assert_eq!(
-            extract_host_from_url("https://api.openai.com/v1/chat"),
-            "api.openai.com:443"
-        );
-        assert_eq!(
-            extract_host_from_url("http://localhost:8080/api"),
-            "localhost:8080"
-        );
-        assert_eq!(
-            extract_host_from_url("http://example.com"),
-            "example.com:80"
-        );
+    fn test_extract_host_delegates() {
+        assert_eq!(extract_host("https://api.openai.com/v1/chat"), "api.openai.com:443");
+        assert_eq!(extract_host("http://localhost:8080/api"), "localhost:8080");
+        assert_eq!(extract_host("http://[::1]:8080/path"), "[::1]:8080");
     }
 }

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use zeroize::Zeroizing;
 
 /// Deserialize a `Vec<String>` that tolerates both string and integer elements.
 ///
@@ -985,7 +986,8 @@ pub struct KernelConfig {
     /// API authentication key. When set, all API endpoints (except /api/health)
     /// require a `Authorization: Bearer <key>` header.
     /// If empty, the API is unauthenticated (local development only).
-    pub api_key: String,
+    /// SECURITY: Wrapped in `Zeroizing` so the key is wiped from memory on drop.
+    pub api_key: Zeroizing<String>,
     /// Kernel operating mode (stable, default, dev).
     #[serde(default)]
     pub mode: KernelMode,
@@ -1296,7 +1298,7 @@ impl Default for KernelConfig {
             memory: MemoryConfig::default(),
             network: NetworkConfig::default(),
             channels: ChannelsConfig::default(),
-            api_key: String::new(),
+            api_key: Zeroizing::new(String::new()),
             mode: KernelMode::default(),
             language: "en".to_string(),
             users: Vec::new(),

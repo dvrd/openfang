@@ -2,7 +2,16 @@
 
 use base64::Engine;
 use openfang_types::media::{GeneratedImage, ImageGenRequest, ImageGenResult};
+use std::sync::LazyLock;
 use tracing::warn;
+
+/// Shared HTTP client for image generation requests.
+static IMAGE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("Failed to build image generation HTTP client")
+});
 
 /// Generate images via OpenAI's image generation API.
 ///
@@ -12,8 +21,8 @@ pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult,
     request.validate()?;
 
     // Check for API key (presence only — never read the actual value into logs)
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY not set. Image generation requires an OpenAI API key.")?;
+    let api_key = openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY")
+        .ok_or("OPENAI_API_KEY not set. Image generation requires an OpenAI API key.")?;
 
     let model_str = request.model.to_string();
 
@@ -30,13 +39,11 @@ pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult,
         body["quality"] = serde_json::json!(request.quality);
     }
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = IMAGE_CLIENT
         .post("https://api.openai.com/v1/images/generations")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&body)
-        .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
         .map_err(|e| format!("Image generation API request failed: {e}"))?;

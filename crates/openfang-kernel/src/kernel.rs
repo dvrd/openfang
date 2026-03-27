@@ -521,11 +521,11 @@ impl OpenFangKernel {
         // OPENFANG_API_KEY: env var sets the API authentication key when
         // config.toml doesn't already have one.  Config file takes precedence.
         if config.api_key.trim().is_empty() {
-            if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
+            if let Some(key) = openfang_types::secret_store::get_secret_or_env("OPENFANG_API_KEY") {
                 let key = key.trim().to_string();
                 if !key.is_empty() {
                     info!("Using API key from OPENFANG_API_KEY environment variable");
-                    config.api_key = key;
+                    config.api_key = zeroize::Zeroizing::new(key);
                 }
             }
         }
@@ -877,7 +877,7 @@ impl OpenFangKernel {
                         None
                     }
                 }
-            } else if std::env::var("OPENAI_API_KEY").is_ok() {
+            } else if openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY").is_some() {
                 let model = if configured_model == "all-MiniLM-L6-v2" {
                     default_embedding_model_for_provider("openai")
                 } else {
@@ -4813,9 +4813,9 @@ impl OpenFangKernel {
             // The MCP spawn calls env_clear() then re-adds only whitelisted vars
             // from std::env — so we must ensure they're in std::env first.
             for var_name in &server_config.env {
-                if std::env::var(var_name).is_err() {
+                if openfang_types::secret_store::get_secret_or_env(var_name).is_none() {
                     if let Some(val) = self.resolve_credential(var_name) {
-                        std::env::set_var(var_name, &val);
+                        openfang_types::secret_store::set_secret(var_name, &val);
                     }
                 }
             }
@@ -5771,8 +5771,13 @@ async fn cron_deliver_response(
         }
         CronDelivery::Webhook { url } => {
             tracing::debug!(url = %url, "Cron: delivering via webhook");
+            // SSRF protection — prevent webhooks targeting internal networks
+            openfang_runtime::ssrf::check_ssrf_async(url)
+                .await
+                .map_err(|e| format!("webhook SSRF check failed: {e}"))?;
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| format!("webhook client init failed: {e}"))?;
             let payload = serde_json::json!({

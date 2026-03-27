@@ -6,9 +6,11 @@
 //! - In-memory rate limiting (per IP)
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{HeaderValue, Request, Response, StatusCode};
 use axum::middleware::Next;
+use sha2::{Sha256, Digest}; // constant-time auth: sha2 + subtle used together
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 use tracing::info;
 
 /// Request ID header name (standard).
@@ -67,8 +69,32 @@ pub async fn auth(
     // SECURITY: Capture method early for method-aware public endpoint checks.
     let method = request.method().clone();
 
-    // Shutdown is loopback-only (CLI on same machine) — skip token auth
+    // SECURITY: Reject path-traversal sequences before any allowlist check.
+    // Without this, a raw path like /a2a/../api/admin would pass starts_with("/a2a/")
+    // in the public allowlist below, while the router resolves it to /api/admin.
+    // Patterns covered:
+    //   /../ or /..  — literal dot-dot
+    //   %2e%2e       — percent-encoded dot-dot (both cases)
+    //   ..%2f / ..%2F — dot-dot followed by encoded slash
+    //   %252e        — double-encoded dot (decodes to %2e on a second pass)
+    //   %255c        — double-encoded backslash (Windows path separator)
+    // Note: bare %2F (encoded slash) is NOT blocked — it is valid in path segments
+    // (e.g. /api/providers/github-copilot/oauth/poll/abc%2Fdef) and does not form
+    // a traversal sequence on its own.
     let path = request.uri().path();
+    let path_lower = path.to_ascii_lowercase();
+    if path_lower.contains("/../")
+        || path_lower.ends_with("/..")
+        || path_lower.contains("%2e%2e")
+        || path_lower.contains("..%2f")
+        || path_lower.contains("%252e")
+        || path_lower.contains("%255c")
+    {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::from(r#"{"error":"Invalid path"}"#))
+            .unwrap_or_default();
+    }
     if path == "/api/shutdown" {
         let is_loopback = request
             .extensions()
@@ -86,61 +112,46 @@ pub async fn auth(
     // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
     // unauthenticated writes (cron job creation, skill install, etc.).
     let is_get = method == axum::http::Method::GET;
-    let is_public = path == "/"
-        || path == "/logo.png"
-        || path == "/favicon.ico"
-        || (path == "/.well-known/agent.json" && is_get)
-        || (path.starts_with("/a2a/") && is_get)
-        || path == "/api/health"
-        || path == "/api/health/detail"
-        || path == "/api/status"
-        || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/")
+    let is_options = method == axum::http::Method::OPTIONS;
+
+    // SECURITY: Public allowlist. All other endpoints require auth.
+    // Auth endpoints must be public so users can log in.
+    // A2A federation endpoints must be public for inter-agent protocol.
+    // Dashboard read endpoints are public GET-only so the SPA can render.
+    let is_public = is_options  // CORS preflight
+        || (path == "/" && is_get)
+        || (path == "/logo.png" && is_get)
+        || (path == "/favicon.ico" && is_get)
+        || (path == "/manifest.json" && is_get)
+        || (path == "/sw.js" && is_get)
+        || (path == "/api/health" && is_get)
+        || (path == "/api/version" && is_get)
+        // Auth flow — must be reachable without a session
         || path == "/api/auth/login"
         || path == "/api/auth/logout"
-        || (path == "/api/auth/check" && is_get);
+        || (path == "/api/auth/check" && is_get)
+        // A2A federation protocol — external agents call these.
+        // GET for status/discovery, POST for task submission per A2A spec.
+        // Use path_lower for the prefix check so non-conforming clients that
+        // uppercase the path segment (/A2A/tasks) are still handled correctly.
+        || (path_lower == "/.well-known/agent.json" && is_get)
+        || (path_lower.starts_with("/a2a/") && (is_get || method == axum::http::Method::POST))
+        // OAuth callbacks — only the specific Copilot device flow endpoints
+        || (path == "/api/providers/github-copilot/oauth/start" && method == axum::http::Method::POST)
+        || (path.starts_with("/api/providers/github-copilot/oauth/poll/") && is_get);
 
     if is_public {
         return next.run(request).await;
     }
 
-    // If no API key configured (empty, whitespace-only, or missing), skip auth
-    // entirely. Users who don't set api_key accept that all endpoints are open.
+    // If no API key configured (empty or missing), skip auth entirely.
+    // Users who don't set api_key accept that all endpoints are open.
     // To secure the dashboard, set a non-empty api_key in config.toml.
-    let api_key_trimmed = auth_state.api_key.trim().to_string();
-    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
+    // Note: api_key is already trimmed at startup in server.rs.
+    if auth_state.api_key.is_empty() && !auth_state.auth_enabled {
         return next.run(request).await;
     }
-    let api_key = api_key_trimmed.as_str();
+    let api_key = auth_state.api_key.as_str();
 
     // Check Authorization: Bearer <token> header, then fallback to X-API-Key
     let bearer_token = request
@@ -157,29 +168,28 @@ pub async fn auth(
     });
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let header_auth = api_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
+    let header_auth = api_token.map(|token| constant_time_key_match(token, api_key));
 
-    // Also check ?token= query parameter (for EventSource/SSE clients that
-    // cannot set custom headers, same approach as WebSocket auth).
+    // WARNING: ?token= in the URL leaks the API key to browser history, server
+    // logs, and any intermediary proxies. This is a fallback for clients that
+    // cannot set HTTP headers (e.g. EventSource/SSE, WebSocket from browsers).
+    // Prefer the Authorization: Bearer <key> header whenever possible.
+    // TODO: Replace ?token= with short-lived session tokens to limit exposure.
     let query_token = request
         .uri()
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
 
+    if query_token.is_some() {
+        tracing::warn!(
+            path = %path,
+            "API key passed via ?token= query parameter — this leaks the key to logs and proxies. \
+             Use the Authorization: Bearer <key> header instead."
+        );
+    }
+
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let query_auth = query_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
+    let query_auth = query_token.map(|token| constant_time_key_match(token, api_key));
 
     // Accept if either auth method matches
     if header_auth == Some(true) || query_auth == Some(true) {
@@ -214,6 +224,15 @@ pub async fn auth(
         .unwrap_or_default()
 }
 
+/// Constant-time comparison of a candidate token against the expected API key.
+/// Hashes both values first so the comparison is always on fixed-length digests,
+/// preventing length-leaking short-circuit.
+fn constant_time_key_match(candidate: &str, expected: &str) -> bool {
+    let candidate_hash = Sha256::digest(candidate.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    candidate_hash.ct_eq(&expected_hash).into()
+}
+
 /// Extract the `openfang_session` cookie value from a request.
 fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
     request
@@ -233,30 +252,30 @@ fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
 pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    headers.insert("x-frame-options", "DENY".parse().unwrap());
-    headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
+    // Use HeaderValue::from_static for compile-time-validated static values.
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    // Note: x-xss-protection is deprecated in all modern browsers and omitted.
+    // Content-Security-Policy (below) is the correct mitigation for XSS.
     // The dashboard handler (webchat_page) sets its own nonce-based CSP.
     // For all other responses (API endpoints), apply a strict default.
     if !headers.contains_key("content-security-policy") {
         headers.insert(
             "content-security-policy",
-            "default-src 'none'; frame-ancestors 'none'"
-                .parse()
-                .unwrap(),
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
         );
     }
     headers.insert(
         "referrer-policy",
-        "strict-origin-when-cross-origin".parse().unwrap(),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
     headers.insert(
         "cache-control",
-        "no-store, no-cache, must-revalidate".parse().unwrap(),
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
     );
     headers.insert(
         "strict-transport-security",
-        "max-age=63072000; includeSubDomains".parse().unwrap(),
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
     response
 }

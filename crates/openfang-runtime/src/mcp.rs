@@ -398,8 +398,7 @@ impl McpConnection {
                 let json_body = if body.trim_start().starts_with("event:") || body.trim_start().starts_with("data:") {
                     body.lines()
                         .filter_map(|line| line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")))
-                        .filter(|s| !s.is_empty())
-                        .last()
+                        .rfind(|s| !s.is_empty())
                         .unwrap_or(&body)
                         .to_string()
                 } else {
@@ -490,10 +489,13 @@ impl McpConnection {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // Sandbox: clear environment, only pass whitelisted vars
+        // Sandbox: clear environment, only pass whitelisted vars.
+        // SECURITY: Use get_secret_or_env to pick up secrets stored at runtime
+        // via the channel-configuration UI (which writes to the in-process
+        // secret_store, not the OS environment).
         cmd.env_clear();
         for var_name in env_whitelist {
-            if let Ok(val) = std::env::var(var_name) {
+            if let Some(val) = openfang_types::secret_store::get_secret_or_env(var_name) {
                 cmd.env(var_name, val);
             }
         }
@@ -554,14 +556,12 @@ impl McpConnection {
     }
 
     async fn connect_sse(url: &str) -> Result<McpTransportHandle, String> {
-        // Basic SSRF check: reject obviously private URLs
-        let lower = url.to_lowercase();
-        if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
-            return Err("SSRF: MCP SSE URL targets metadata endpoint".to_string());
-        }
+        // SSRF protection — full check via shared module
+        crate::ssrf::check_ssrf_async(url).await?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
