@@ -25,10 +25,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -r openfang && useradd -r -g openfang -d /data -s /sbin/nologin openfang
+
+RUN mkdir -p /data /opt/openfang && chown -R openfang:openfang /data /opt/openfang
+
 COPY --from=builder /build/target/release/openfang /usr/local/bin/
-COPY --from=builder /build/agents /opt/openfang/agents
+COPY --from=builder --chown=openfang:openfang /build/agents /opt/openfang/agents
 EXPOSE 4200
 VOLUME /data
 ENV OPENFANG_HOME=/data
+
+USER openfang
 ENTRYPOINT ["openfang"]
 CMD ["start"]

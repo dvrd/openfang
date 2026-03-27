@@ -613,13 +613,13 @@ fn check_option_available(provider_env: Option<&str>, binary: Option<&str>) -> b
     let env_ok = match provider_env {
         None => true,
         Some(env) => {
-            let direct = std::env::var(env).map(|v| !v.is_empty()).unwrap_or(false);
+            let direct = openfang_types::secret_store::get_secret_or_env(env).map(|v| !v.is_empty()).unwrap_or(false);
             if direct {
                 return binary.map(which_binary).unwrap_or(true);
             }
             // Gemini special case: also accept GOOGLE_API_KEY
             if env == "GEMINI_API_KEY" {
-                std::env::var("GOOGLE_API_KEY")
+                openfang_types::secret_store::get_secret_or_env("GOOGLE_API_KEY")
                     .map(|v| !v.is_empty())
                     .unwrap_or(false)
             } else {
