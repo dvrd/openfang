@@ -18,6 +18,8 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
     "100.100.100.200", // Alibaba Cloud IMDS
     "192.0.0.192",     // Azure IMDS alternative
     "0.0.0.0",
+    "0",               // Some systems resolve to 0.0.0.0
+    "127.0.0.1",       // Explicit loopback (belt-and-suspenders)
     "::1",
     "[::1]",
 ];
@@ -52,17 +54,20 @@ pub fn check_ssrf(url: &str) -> Result<(), String> {
         ));
     }
 
-    // Step 3: DNS resolution — check every returned IP
+    // Step 3: DNS resolution — check every returned IP.
+    // SECURITY: Fail-closed — if DNS resolution fails, block the request.
     let port = if url.starts_with("https") { 443 } else { 80 };
     let socket_addr = format!("{hostname}:{port}");
-    if let Ok(addrs) = socket_addr.to_socket_addrs() {
-        for addr in addrs {
-            let ip = addr.ip();
-            if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
-                return Err(format!(
-                    "SSRF blocked: {hostname} resolves to private IP {ip}"
-                ));
-            }
+    let addrs = socket_addr
+        .to_socket_addrs()
+        .map_err(|e| format!("SSRF blocked: DNS resolution failed for {hostname}: {e}"))?;
+
+    for addr in addrs {
+        let ip = addr.ip();
+        if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
+            return Err(format!(
+                "SSRF blocked: {hostname} resolves to private IP {ip}"
+            ));
         }
     }
 
@@ -73,7 +78,7 @@ pub fn check_ssrf(url: &str) -> Result<(), String> {
 ///
 /// IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 (link-local)
 /// IPv6: fc00::/7 (ULA), fe80::/10 (link-local)
-pub fn is_private_ip(ip: &IpAddr) -> bool {
+pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let octets = v4.octets();
@@ -83,6 +88,13 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
             )
         }
         IpAddr::V6(v6) => {
+            // SECURITY: Check IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1)
+            // These bypass V6-only checks but target V4 private ranges.
+            if let Some(mapped_v4) = v6.to_ipv4_mapped() {
+                return mapped_v4.is_loopback()
+                    || mapped_v4.is_unspecified()
+                    || is_private_ip(&IpAddr::V4(mapped_v4));
+            }
             let segments = v6.segments();
             (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
         }
@@ -93,7 +105,7 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
 ///
 /// Handles IPv6 bracket notation (`[::1]:8080`), explicit ports, and
 /// defaults to 443 for `https` / 80 for `http`.
-pub fn extract_host(url: &str) -> String {
+pub(crate) fn extract_host(url: &str) -> String {
     if let Some(after_scheme) = url.split("://").nth(1) {
         let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
         // Handle IPv6 bracket notation: [::1]:8080
@@ -188,6 +200,22 @@ mod tests {
         // public
         assert!(!is_private_ip(
             &"2607:f8b0:4004:800::200e".parse::<IpAddr>().unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_private_ip_v4_mapped_v6() {
+        // ::ffff:127.0.0.1 — IPv4-mapped IPv6 loopback
+        assert!(is_private_ip(
+            &"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()
+        ));
+        // ::ffff:10.0.0.1 — IPv4-mapped IPv6 private
+        assert!(is_private_ip(
+            &"::ffff:10.0.0.1".parse::<IpAddr>().unwrap()
+        ));
+        // ::ffff:8.8.8.8 — IPv4-mapped IPv6 public
+        assert!(!is_private_ip(
+            &"::ffff:8.8.8.8".parse::<IpAddr>().unwrap()
         ));
     }
 

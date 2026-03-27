@@ -236,13 +236,18 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     // Extract host:port from URL for capability check
-    let host = extract_host_from_url(url);
+    let host = extract_host(url);
     if let Err(e) = check_capability(&state.capabilities, &Capability::NetConnect(host)) {
         return e;
     }
 
     state.tokio_handle.block_on(async {
-        let client = reqwest::Client::new();
+        // SECURITY: Disable automatic redirects to prevent SSRF bypass via
+        // redirect from allowed host to internal IP (e.g. 169.254.169.254).
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
         let request = match method.to_uppercase().as_str() {
             "POST" => client.post(url).body(body.to_string()),
             "PUT" => client.put(url).body(body.to_string()),
@@ -260,12 +265,6 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
             Err(e) => json!({"error": format!("Request failed: {e}")}),
         }
     })
-}
-
-/// Extract host:port from a URL for capability checking.
-/// Delegates to the shared `crate::ssrf::extract_host` which also handles IPv6.
-fn extract_host_from_url(url: &str) -> String {
-    extract_host(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -569,9 +568,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_host_from_url_delegates() {
-        assert_eq!(extract_host_from_url("https://api.openai.com/v1/chat"), "api.openai.com:443");
-        assert_eq!(extract_host_from_url("http://localhost:8080/api"), "localhost:8080");
-        assert_eq!(extract_host_from_url("http://[::1]:8080/path"), "[::1]:8080");
+    fn test_extract_host_delegates() {
+        assert_eq!(extract_host("https://api.openai.com/v1/chat"), "api.openai.com:443");
+        assert_eq!(extract_host("http://localhost:8080/api"), "localhost:8080");
+        assert_eq!(extract_host("http://[::1]:8080/path"), "[::1]:8080");
     }
 }
