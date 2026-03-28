@@ -40,17 +40,36 @@ pub fn get_secret(key: &str) -> Option<String> {
     store().get(key).map(|r| r.value().as_str().to_string())
 }
 
-/// Retrieve a secret, falling back to the process environment.
+/// Retrieve a secret, falling back to Docker secret files and the process environment.
 ///
-/// **Priority:** the in-process store is checked first; the OS environment is
-/// only consulted when the key is absent from the store. This means a value set
-/// via [`set_secret`] at runtime will shadow an identically named startup env
-/// var. Callers that want only runtime-set values should use [`get_secret`].
+/// **Priority chain:**
+/// 1. In-process store ([`set_secret`]) — runtime-configured values
+/// 2. Docker secret file (`/run/secrets/<KEY_LOWERCASE>`) — mounted by Docker Compose
+/// 3. OS environment variable — startup-time configuration
+///
+/// This means a value set via [`set_secret`] at runtime will shadow both Docker
+/// secrets and env vars. Callers that want only runtime-set values should use
+/// [`get_secret`].
 ///
 /// Use this instead of `std::env::var()` when the value may have been set at
 /// runtime via the channel-configuration UI.
 pub fn get_secret_or_env(key: &str) -> Option<String> {
-    get_secret(key).or_else(|| std::env::var(key).ok())
+    get_secret(key)
+        .or_else(|| read_docker_secret(key))
+        .or_else(|| std::env::var(key).ok())
+}
+
+/// Read a Docker secret from `/run/secrets/<key_lowercase>`.
+///
+/// Docker Compose mounts secrets as files. The filename is the secret name
+/// in lowercase (e.g., `OPENAI_API_KEY` → `/run/secrets/openai_api_key`).
+/// Returns `None` if the file doesn't exist or is empty.
+fn read_docker_secret(key: &str) -> Option<String> {
+    let path = std::path::Path::new("/run/secrets").join(key.to_lowercase());
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
