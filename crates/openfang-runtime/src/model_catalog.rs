@@ -385,9 +385,11 @@ impl ModelCatalog {
             return;
         }
         let Ok(data) = std::fs::read_to_string(path) else {
+            tracing::warn!(path = %path.display(), "Failed to read custom models file");
             return;
         };
         let Ok(entries) = serde_json::from_str::<Vec<ModelCatalogEntry>>(&data) else {
+            tracing::warn!(path = %path.display(), "Failed to parse custom models JSON");
             return;
         };
         for entry in entries {

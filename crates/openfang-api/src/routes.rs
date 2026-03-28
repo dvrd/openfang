@@ -2801,13 +2801,16 @@ pub async fn test_channel(
 
 /// Send a real test message to a specific channel/chat on the given platform.
 async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
     let test_msg = "OpenFang test message — your channel is connected!";
 
     match channel_name {
         "discord" => {
-            let token = std::env::var("DISCORD_BOT_TOKEN")
-                .map_err(|_| "DISCORD_BOT_TOKEN not set".to_string())?;
+            let token = openfang_types::secret_store::get_secret_or_env("DISCORD_BOT_TOKEN")
+                .ok_or_else(|| "DISCORD_BOT_TOKEN not set".to_string())?;
             let url = format!("https://discord.com/api/v10/channels/{target_id}/messages");
             let resp = client
                 .post(&url)
@@ -2822,8 +2825,8 @@ async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Resul
             }
         }
         "telegram" => {
-            let token = std::env::var("TELEGRAM_BOT_TOKEN")
-                .map_err(|_| "TELEGRAM_BOT_TOKEN not set".to_string())?;
+            let token = openfang_types::secret_store::get_secret_or_env("TELEGRAM_BOT_TOKEN")
+                .ok_or_else(|| "TELEGRAM_BOT_TOKEN not set".to_string())?;
             let url = format!("https://api.telegram.org/bot{token}/sendMessage");
             let resp = client
                 .post(&url)
@@ -2837,8 +2840,8 @@ async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Resul
             }
         }
         "slack" => {
-            let token = std::env::var("SLACK_BOT_TOKEN")
-                .map_err(|_| "SLACK_BOT_TOKEN not set".to_string())?;
+            let token = openfang_types::secret_store::get_secret_or_env("SLACK_BOT_TOKEN")
+                .ok_or_else(|| "SLACK_BOT_TOKEN not set".to_string())?;
             let url = "https://slack.com/api/chat.postMessage";
             let resp = client
                 .post(url)
@@ -2892,7 +2895,8 @@ pub async fn reload_channels(State(state): State<Arc<AppState>>) -> impl IntoRes
 /// is running, it returns instructions to set one up.
 pub async fn whatsapp_qr_start() -> impl IntoResponse {
     // Check for WhatsApp Web gateway URL in config or env
-    let gateway_url = std::env::var("WHATSAPP_WEB_GATEWAY_URL").unwrap_or_default();
+    let gateway_url = openfang_types::secret_store::get_secret_or_env("WHATSAPP_WEB_GATEWAY_URL")
+        .unwrap_or_default();
 
     if gateway_url.is_empty() {
         return Json(serde_json::json!({
@@ -2946,7 +2950,8 @@ pub async fn whatsapp_qr_start() -> impl IntoResponse {
 pub async fn whatsapp_qr_status(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let gateway_url = std::env::var("WHATSAPP_WEB_GATEWAY_URL").unwrap_or_default();
+    let gateway_url = openfang_types::secret_store::get_secret_or_env("WHATSAPP_WEB_GATEWAY_URL")
+        .unwrap_or_default();
 
     if gateway_url.is_empty() {
         return Json(serde_json::json!({
@@ -4348,12 +4353,17 @@ pub async fn install_hand_deps(
                     }
                 }
                 if !extra_paths.is_empty() {
-                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    // NOTE: We store the augmented PATH in the secret store instead of
+                    // calling std::env::set_var, which is unsound in multi-threaded
+                    // Rust (deprecated since 1.82). Subprocess spawners should read
+                    // this via get_secret_or_env("PATH") and pass it via Command::env().
+                    let current_path = openfang_types::secret_store::get_secret_or_env("PATH")
+                        .unwrap_or_default();
                     let new_path = format!("{};{}", extra_paths.join(";"), current_path);
-                    std::env::set_var("PATH", &new_path);
+                    openfang_types::secret_store::set_secret("PATH", &new_path);
                     tracing::info!(
                         added = extra_paths.len(),
-                        "Refreshed PATH with winget/pip directories"
+                        "Refreshed PATH with winget/pip directories (stored in secret_store)"
                     );
                 }
             }
@@ -7365,8 +7375,7 @@ pub async fn set_provider_key(
     let current_has_key = if current_key_env.is_empty() {
         false
     } else {
-        std::env::var(&current_key_env)
-            .ok()
+        openfang_types::secret_store::get_secret_or_env(&current_key_env)
             .filter(|v| !v.is_empty())
             .is_some()
     };
@@ -7383,6 +7392,17 @@ pub async fn set_provider_key(
         if let Some(model_id) = default_model {
             // Update config.toml to persist the switch
             let config_path = state.kernel.config.home_dir.join("config.toml");
+            // SECURITY: Validate values before interpolating into TOML to prevent
+            // injection (e.g. name = "foo\"\nprovider_urls.evil = \"http://x").
+            fn is_safe_toml_value(s: &str) -> bool {
+                s.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+            }
+            if !is_safe_toml_value(&name) || !is_safe_toml_value(&model_id) || !is_safe_toml_value(&env_var) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Provider name/model contains invalid characters"})),
+                );
+            }
             let update_toml = format!(
                 "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
                 name, model_id, env_var
@@ -10651,8 +10671,8 @@ pub async fn list_commands(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
 /// SECURITY: Validate webhook bearer token using constant-time comparison.
 fn validate_webhook_token(headers: &axum::http::HeaderMap, token_env: &str) -> bool {
-    let expected = match std::env::var(token_env) {
-        Ok(t) if t.len() >= 32 => t,
+    let expected = match openfang_types::secret_store::get_secret_or_env(token_env) {
+        Some(t) if t.len() >= 32 => t,
         _ => return false,
     };
 
@@ -11266,25 +11286,29 @@ pub async fn auth_login(
     let username = req.get("username").and_then(|v| v.as_str()).unwrap_or("");
     let password = req.get("password").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Constant-time username comparison to prevent timing attacks
+    // SECURITY: Hash both sides before constant-time comparison to prevent
+    // length-leaking timing oracle (same pattern as validate_webhook_token).
     let username_ok = {
+        use sha2::{Sha256, Digest};
         use subtle::ConstantTimeEq;
-        let stored = auth_cfg.username.as_bytes();
-        let provided = username.as_bytes();
-        if stored.len() != provided.len() {
-            false
-        } else {
-            bool::from(stored.ct_eq(provided))
-        }
+        let stored_hash = Sha256::digest(auth_cfg.username.as_bytes());
+        let provided_hash = Sha256::digest(username.as_bytes());
+        bool::from(stored_hash.ct_eq(&provided_hash))
     };
 
     if !username_ok || !crate::session_auth::verify_password(password, &auth_cfg.password_hash) {
-        // Audit log the failed attempt
+        // Audit log the failed attempt. Sanitize username to prevent log injection
+        // (attacker could inject newlines or control characters into structured logs).
+        let safe_username: String = username
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.' || *c == '@')
+            .take(64)
+            .collect();
         state.kernel.audit_log.record(
             "system",
             openfang_runtime::audit::AuditAction::AuthAttempt,
             "dashboard login failed",
-            format!("username: {username}"),
+            format!("username: {safe_username}"),
         );
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)

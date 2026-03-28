@@ -109,7 +109,11 @@ impl ReloadPlan {
 fn field_changed<T: serde::Serialize>(old: &T, new: &T) -> bool {
     let old_json = serde_json::to_string(old).ok();
     let new_json = serde_json::to_string(new).ok();
-    old_json != new_json
+    // If either side fails to serialize, assume changed (fail-open for reload).
+    match (&old_json, &new_json) {
+        (Some(a), Some(b)) => a != b,
+        _ => true,
+    }
 }
 
 /// Diff two configurations and produce a reload plan.
