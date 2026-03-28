@@ -82,7 +82,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         env_var: "VOLCENGINE_API_KEY",
         default_model: "ark-code-latest",
         needs_key: true,
-        hint: "ByteDance Ark — coding models (cn-beijing)",
+        hint: "Shares VOLCENGINE_API_KEY with Volcano Engine standard plan. Uses Ark Coding endpoint.",
     },
     ProviderInfo {
         name: "openrouter",

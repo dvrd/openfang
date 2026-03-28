@@ -4609,11 +4609,9 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             let base = openfang_types::model_catalog::VOLCENGINE_BASE_URL.trim_end_matches('/');
             client.get(format!("{base}/models")).bearer_auth(&key).send()
         }
-        "volcengine_coding" => {
-            let base = openfang_types::model_catalog::VOLCENGINE_CODING_BASE_URL
-                .trim_end_matches('/');
-            client.get(format!("{base}/models")).bearer_auth(&key).send()
-        }
+        // The Ark Coding endpoint (/api/coding/v3) does not expose a standard
+        // OpenAI-compatible /models list — skip probing and assume the key is valid.
+        "volcengine_coding" => return true,
         _ => return true, // unknown provider — skip test
     };
 

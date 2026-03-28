@@ -82,13 +82,23 @@ impl ModelCatalog {
             }
 
             // Primary: check the provider's declared env var
-            let has_key = std::env::var(&provider.api_key_env).is_ok();
+            let has_key = std::env::var(&provider.api_key_env)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some();
 
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
-                "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "gemini" => std::env::var("GOOGLE_API_KEY")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .is_some(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY")
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .is_some()
+                        || read_codex_credential().is_some()
                 }
                 // claude-code is handled above (before key_required check)
                 _ => false,
@@ -3630,7 +3640,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         },
         ModelCatalogEntry {
             id: "doubao-seed-2.0-code".into(),
-            display_name: "Doubao Seed 2.0 Code".into(),
+            display_name: "Doubao Seed 2.0 Code (Coding Plan)".into(),
             provider: "volcengine_coding".into(),
             tier: ModelTier::Smart,
             context_window: 262_144,
@@ -3809,7 +3819,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // Standard plan (/api/v3) variant; see volcengine_coding for the coding-plan endpoint
         ModelCatalogEntry {
             id: "doubao-seed-code".into(),
-            display_name: "Doubao Seed Code".into(),
+            display_name: "Doubao Seed Code (Standard Plan)".into(),
             provider: "volcengine".into(),
             tier: ModelTier::Smart,
             context_window: 131_072,
@@ -4972,5 +4982,27 @@ mod tests {
         // The model should belong to the volcengine provider
         let model = catalog.find_model("doubao-seed-1-6-251015").unwrap();
         assert_eq!(model.provider, "volcengine");
+    }
+
+    #[test]
+    fn test_doubao_dual_role_consistency() {
+        use openfang_types::model_catalog::VOLCENGINE_BASE_URL;
+
+        // 1. The canonical VOLCENGINE_BASE_URL must point at volces.com
+        assert!(
+            VOLCENGINE_BASE_URL.contains("volces.com"),
+            "VOLCENGINE_BASE_URL must contain volces.com, got: {}",
+            VOLCENGINE_BASE_URL
+        );
+
+        // 2. The model found via the "doubao" alias must belong to the "volcengine" provider
+        let catalog = ModelCatalog::new();
+        let model = catalog
+            .find_model("doubao")
+            .expect("catalog.find_model(\"doubao\") must resolve via alias");
+        assert_eq!(
+            model.provider, "volcengine",
+            "model resolved by 'doubao' must have provider == 'volcengine'"
+        );
     }
 }
