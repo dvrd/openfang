@@ -17,6 +17,7 @@ openfang-migrate = { path = "../openfang-migrate" }
 openfang-skills = { path = "../openfang-skills" }
 openfang-extensions = { path = "../openfang-extensions" }
 zeroize = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }

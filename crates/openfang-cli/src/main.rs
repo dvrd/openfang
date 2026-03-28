@@ -886,6 +886,11 @@ fn write_stdout_safe(msg: &str) {
 }
 
 fn main() {
+    // SECURITY: Install the rustls CryptoProvider before any HTTP clients are created.
+    // With multiple reqwest versions (0.12 + 0.13) the auto-detection can fail,
+    // causing a panic on the first HTTPS request (upstream #886).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Load ~/.openfang/.env into process environment (system env takes priority).
     dotenv::load_dotenv();
 

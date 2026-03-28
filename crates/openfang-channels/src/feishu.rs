@@ -160,7 +160,7 @@ impl DedupCache {
 
     /// Returns `true` if the ID was already seen (duplicate).
     fn check_and_insert(&self, id: &str) -> bool {
-        let mut ids = self.ids.lock().unwrap();
+        let mut ids = self.ids.lock().unwrap_or_else(|e| e.into_inner());
         if ids.iter().any(|s| s == id) {
             return true;
         }
