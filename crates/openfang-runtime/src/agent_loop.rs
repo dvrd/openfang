@@ -110,13 +110,18 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     let provider_normalized = provider.replace('_', "-");
     let slash_prefix = format!("{}/", provider_normalized);
     let colon_prefix = format!("{}:", provider_normalized);
-    if model.starts_with(&slash_prefix) {
+    let mut result = if model.starts_with(&slash_prefix) {
         model[slash_prefix.len()..].to_string()
     } else if model.starts_with(&colon_prefix) {
         model[colon_prefix.len()..].to_string()
     } else {
         model.to_string()
+    };
+    // Strip ark/ prefix for volcengine_coding endpoint (Ark marketplace models)
+    if result.starts_with("ark/") {
+        result = result["ark/".len()..].to_string();
     }
+    result
 }
 
 /// Default context window size (tokens) for token-based trimming.
