@@ -779,6 +779,105 @@ mod tests {
     }
 
     #[test]
+    fn test_task_store_hard_cap_evicts_in_progress() {
+        // When all tasks are in-progress (no completed to evict),
+        // the store must still enforce the hard cap.
+        let store = A2aTaskStore::new(3);
+        for i in 0..3 {
+            let task = A2aTask {
+                id: format!("working-{i}"),
+                session_id: None,
+                status: A2aTaskStatus::Working.into(),
+                messages: vec![],
+                artifacts: vec![],
+                created_at: None,
+            };
+            store.insert(task);
+        }
+        assert_eq!(store.len(), 3);
+
+        // Insert a 4th — an in-progress task must be evicted
+        let task = A2aTask {
+            id: "working-3".to_string(),
+            session_id: None,
+            status: A2aTaskStatus::Working.into(),
+            messages: vec![],
+            artifacts: vec![],
+            created_at: None,
+        };
+        store.insert(task);
+        // Hard cap enforced: never exceeds max_tasks
+        assert!(store.len() <= 3, "Store exceeded max_tasks: {}", store.len());
+        // The new task should be present
+        assert!(store.get("working-3").is_some());
+    }
+
+    #[test]
+    fn test_task_store_ttl_garbage_collection() {
+        let store = A2aTaskStore::new(100);
+
+        // Insert a task with a creation time 25 hours in the past
+        {
+            let mut tasks = store.tasks.lock().unwrap();
+            let old_time = std::time::SystemTime::now()
+                - std::time::Duration::from_secs(25 * 3600);
+            tasks.insert(
+                "expired-1".to_string(),
+                A2aTask {
+                    id: "expired-1".to_string(),
+                    session_id: None,
+                    status: A2aTaskStatus::Working.into(),
+                    messages: vec![],
+                    artifacts: vec![],
+                    created_at: Some(old_time),
+                },
+            );
+        }
+        assert_eq!(store.len(), 1);
+
+        // Inserting a new task triggers GC — the expired task should be removed
+        let task = A2aTask {
+            id: "fresh-1".to_string(),
+            session_id: None,
+            status: A2aTaskStatus::Working.into(),
+            messages: vec![],
+            artifacts: vec![],
+            created_at: None,
+        };
+        store.insert(task);
+
+        assert!(store.get("expired-1").is_none(), "Expired task should have been GC'd");
+        assert!(store.get("fresh-1").is_some());
+    }
+
+    #[test]
+    fn test_task_store_flood_never_exceeds_capacity() {
+        let max = 10;
+        let store = A2aTaskStore::new(max);
+
+        // Flood with 100 tasks — store must never exceed max
+        for i in 0..100 {
+            let task = A2aTask {
+                id: format!("flood-{i}"),
+                session_id: None,
+                status: A2aTaskStatus::Working.into(),
+                messages: vec![],
+                artifacts: vec![],
+                created_at: None,
+            };
+            store.insert(task);
+            assert!(
+                store.len() <= max,
+                "Store exceeded max after insert {i}: {}",
+                store.len()
+            );
+        }
+        // Final state: exactly max tasks, most recent ones present
+        assert_eq!(store.len(), max);
+        assert!(store.get("flood-99").is_some());
+    }
+
+    #[test]
     fn test_a2a_config_serde() {
         use openfang_types::config::{A2aConfig, ExternalAgent};
 
