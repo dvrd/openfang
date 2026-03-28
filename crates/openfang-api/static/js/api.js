@@ -141,6 +141,32 @@ var OpenFangAPI = (function() {
 
   function setAuthToken(token) { _authToken = token; }
 
+  // Cached stream token and its expiry time
+  var _streamToken = null;
+  var _streamTokenExpiry = 0;
+
+  // Get a short-lived stream token for SSE/WebSocket connections.
+  // Caches the token until 30s before expiry to avoid unnecessary requests.
+  async function _getStreamToken() {
+    if (!_authToken) return null;
+    var now = Date.now();
+    if (_streamToken && now < _streamTokenExpiry) return _streamToken;
+    try {
+      var resp = await fetch(BASE + '/api/auth/stream-token', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + _authToken }
+      });
+      if (resp.ok) {
+        var data = await resp.json();
+        _streamToken = data.token;
+        // Expire 30s early to avoid races
+        _streamTokenExpiry = now + (data.expires_in * 1000) - 30000;
+        return _streamToken;
+      }
+    } catch (e) { /* fall back to _authToken */ }
+    return null;
+  }
+
   function headers() {
     var h = { 'Content-Type': 'application/json' };
     if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
@@ -220,10 +246,13 @@ var OpenFangAPI = (function() {
     _doConnect(agentId);
   }
 
-  function _doConnect(agentId) {
+  async function _doConnect(agentId) {
     try {
       var url = WS_BASE + '/api/agents/' + agentId + '/ws';
-      if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
+      // Use short-lived stream token instead of leaking the API key in the URL.
+      var streamToken = await _getStreamToken();
+      if (streamToken) url += '?token=' + encodeURIComponent(streamToken);
+      else if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
       var socket = new WebSocket(url);
       _ws = socket;
 
@@ -326,6 +355,7 @@ var OpenFangAPI = (function() {
   return {
     setAuthToken: setAuthToken,
     getToken: getToken,
+    _getStreamToken: _getStreamToken,
     get: get,
     post: post,
     put: put,

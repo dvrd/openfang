@@ -754,6 +754,7 @@ pub async fn build_router(
         .route("/api/auth/login", axum::routing::post(routes::auth_login))
         .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
         .route("/api/auth/check", axum::routing::get(routes::auth_check))
+        .route("/api/auth/stream-token", axum::routing::post(routes::auth_stream_token))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth,

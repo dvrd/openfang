@@ -27,13 +27,15 @@ function logsPage() {
     auditLoading: false,
     auditLoadError: '',
 
-    startStreaming: function() {
+    startStreaming: async function() {
       var self = this;
       if (this._eventSource) { this._eventSource.close(); this._eventSource = null; }
 
       var url = '/api/logs/stream';
       var sep = '?';
-      var token = OpenFangAPI.getToken();
+      // Use short-lived stream token instead of permanent API key in URL
+      var streamToken = await OpenFangAPI._getStreamToken();
+      var token = streamToken || OpenFangAPI.getToken();
       if (token) { url += sep + 'token=' + encodeURIComponent(token); sep = '&'; }
 
       try {

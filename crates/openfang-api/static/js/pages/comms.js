@@ -36,11 +36,14 @@ function commsPage() {
       this.loading = false;
     },
 
-    startSSE() {
+    async startSSE() {
       if (this.sseSource) this.sseSource.close();
       var self = this;
       var url = OpenFangAPI.baseUrl + '/api/comms/events/stream';
-      if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
+      // Use short-lived stream token instead of permanent API key in URL
+      var streamToken = await OpenFangAPI._getStreamToken();
+      if (streamToken) url += '?token=' + encodeURIComponent(streamToken);
+      else if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
       this.sseSource = new EventSource(url);
       this.sseSource.onmessage = function(ev) {
         if (ev.data === 'ping') return;

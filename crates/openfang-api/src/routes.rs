@@ -11517,6 +11517,72 @@ pub async fn auth_check(
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// Short-lived stream tokens (replaces ?token=<api_key> for SSE/WebSocket)
+// ══════════════════════════════════════════════════════════════════════
+
+/// In-memory store for short-lived stream tokens.
+/// Bounded to 1000 entries with TTL-based expiry.
+static STREAM_TOKENS: LazyLock<DashMap<String, std::time::Instant>> =
+    LazyLock::new(DashMap::new);
+
+/// Maximum number of active stream tokens.
+const MAX_STREAM_TOKENS: usize = 1000;
+/// Stream token TTL: 5 minutes.
+const STREAM_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// POST /api/auth/stream-token — Issue a short-lived token for SSE/WebSocket.
+///
+/// Requires a valid API key via Bearer header. Returns a 5-minute token
+/// that can be used as `?token=<stream_token>` without exposing the
+/// permanent API key in URLs.
+pub async fn auth_stream_token() -> impl IntoResponse {
+    // The caller is already authenticated (this endpoint requires auth via middleware).
+    // Generate a random token.
+    use rand::RngCore;
+    let mut buf = [0u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    let token = format!("sst_{}", hex::encode(buf)); // "sst_" prefix = short-lived stream token
+
+    // GC expired tokens before inserting
+    STREAM_TOKENS.retain(|_, expiry| expiry.elapsed() < STREAM_TOKEN_TTL);
+
+    // Enforce capacity
+    if STREAM_TOKENS.len() >= MAX_STREAM_TOKENS {
+        // Evict oldest
+        if let Some(oldest) = STREAM_TOKENS
+            .iter()
+            .max_by_key(|e| e.value().elapsed())
+            .map(|e| e.key().clone())
+        {
+            STREAM_TOKENS.remove(&oldest);
+        }
+    }
+
+    STREAM_TOKENS.insert(token.clone(), std::time::Instant::now());
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "token": token,
+            "expires_in": STREAM_TOKEN_TTL.as_secs(),
+        })),
+    )
+}
+
+/// Validate a stream token. Returns true if valid and not expired.
+pub fn validate_stream_token(token: &str) -> bool {
+    if let Some(entry) = STREAM_TOKENS.get(token) {
+        if entry.value().elapsed() < STREAM_TOKEN_TTL {
+            return true;
+        }
+        // Expired — remove it
+        drop(entry);
+        STREAM_TOKENS.remove(token);
+    }
+    false
+}
+
 /// Remove a `[section]` and its contents from a TOML string.
 #[allow(dead_code)]
 fn backup_config(config_path: &std::path::Path) {

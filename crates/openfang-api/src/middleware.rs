@@ -170,29 +170,31 @@ pub async fn auth(
     // SECURITY: Use constant-time comparison to prevent timing attacks.
     let header_auth = api_token.map(|token| constant_time_key_match(token, api_key));
 
-    // WARNING: ?token= in the URL leaks the API key to browser history, server
-    // logs, and any intermediary proxies. This is a fallback for clients that
-    // cannot set HTTP headers (e.g. EventSource/SSE, WebSocket from browsers).
-    // Prefer the Authorization: Bearer <key> header whenever possible.
-    // TODO: Replace ?token= with short-lived session tokens to limit exposure.
+    // ?token= query parameter for SSE/WebSocket connections that can't set headers.
+    // Priority: (1) short-lived stream token (sst_*), (2) API key (deprecated, warns).
     let query_token = request
         .uri()
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
 
-    if query_token.is_some() {
-        tracing::warn!(
-            path = %path,
-            "API key passed via ?token= query parameter — this leaks the key to logs and proxies. \
-             Use the Authorization: Bearer <key> header instead."
-        );
+    if let Some(token) = query_token {
+        // Check short-lived stream token first (preferred — no key leakage)
+        if token.starts_with("sst_") && crate::routes::validate_stream_token(token) {
+            return next.run(request).await;
+        }
+        // Fallback: direct API key (deprecated — leaks key to logs/proxies)
+        if constant_time_key_match(token, api_key) {
+            tracing::warn!(
+                path = %path,
+                "API key passed via ?token= query parameter — this leaks the key to logs and proxies. \
+                 Use POST /api/auth/stream-token to get a short-lived token instead."
+            );
+            return next.run(request).await;
+        }
     }
 
-    // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let query_auth = query_token.map(|token| constant_time_key_match(token, api_key));
-
-    // Accept if either auth method matches
-    if header_auth == Some(true) || query_auth == Some(true) {
+    // Accept if header auth matched
+    if header_auth == Some(true) {
         return next.run(request).await;
     }
 
@@ -208,7 +210,7 @@ pub async fn auth(
     }
 
     // Determine error message: was a credential provided but wrong, or missing entirely?
-    let credential_provided = header_auth.is_some() || query_auth.is_some();
+    let credential_provided = header_auth.is_some() || query_token.is_some();
     let error_msg = if credential_provided {
         "Invalid API key"
     } else {
