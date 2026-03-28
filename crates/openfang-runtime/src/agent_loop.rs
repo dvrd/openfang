@@ -44,6 +44,20 @@ const BASE_RETRY_DELAY_MS: u64 = 1000;
 /// Raised from 60s to 120s for browser automation and long-running builds.
 const TOOL_TIMEOUT_SECS: u64 = 120;
 
+/// Timeout for inter-agent tool calls (seconds).
+/// Agent delegation (agent_send, agent_spawn) can involve a full agent loop on the
+/// target, so these need a significantly longer timeout than regular tools.
+const AGENT_TOOL_TIMEOUT_SECS: u64 = 600;
+
+/// Returns the appropriate timeout duration for a given tool name.
+/// Inter-agent calls get a longer timeout since they may trigger full agent loops.
+fn tool_timeout_for(tool_name: &str) -> Duration {
+    match tool_name {
+        "agent_send" | "agent_spawn" => Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS),
+        _ => Duration::from_secs(TOOL_TIMEOUT_SECS),
+    }
+}
+
 /// Maximum consecutive MaxTokens continuations before returning partial response.
 /// Raised from 3 to 5 to allow longer-form generation.
 const MAX_CONTINUATIONS: u32 = 5;
@@ -281,7 +295,9 @@ pub async fn run_agent_loop(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -404,9 +420,22 @@ pub async fn run_agent_loop(
             cb(LoopPhase::Thinking);
         }
 
+        // Stamp last_active before the (potentially long) LLM call so the
+        // heartbeat monitor doesn't flag us as unresponsive mid-iteration.
+        if let Some(k) = &kernel {
+            k.touch_agent(&agent_id_str);
+        }
+
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(&*driver, request, Some(provider_name), None, &manifest.fallback_models).await?;
+        let mut response = call_with_retry(
+            &*driver,
+            request,
+            Some(provider_name),
+            None,
+            &manifest.fallback_models,
+        )
+        .await?;
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -477,7 +506,10 @@ pub async fn run_agent_loop(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -742,8 +774,10 @@ pub async fn run_agent_loop(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -772,12 +806,12 @@ pub async fn run_agent_loop(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -1453,7 +1487,9 @@ pub async fn run_agent_loop_streaming(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -1563,6 +1599,14 @@ pub async fn run_agent_loop_streaming(
             }
         }
 
+        // Re-validate tool_call/tool_result pairing after overflow drains
+        // which may have broken assistant→tool ordering invariants.
+        // (Matches the non-streaming loop; fixes Qwen3.5-plus "tool_calls must
+        // be followed by tool messages" errors after context overflow recovery.)
+        if recovery != RecoveryStage::None {
+            messages = crate::session_repair::validate_and_repair(&messages);
+        }
+
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
 
@@ -1668,7 +1712,10 @@ pub async fn run_agent_loop_streaming(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -1911,8 +1958,10 @@ pub async fn run_agent_loop_streaming(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -1941,12 +1990,12 @@ pub async fn run_agent_loop_streaming(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -3017,6 +3066,15 @@ mod tests {
     #[test]
     fn test_tool_timeout_constant() {
         assert_eq!(TOOL_TIMEOUT_SECS, 120);
+        assert_eq!(AGENT_TOOL_TIMEOUT_SECS, 600);
+    }
+
+    #[test]
+    fn test_tool_timeout_for_agent_tools() {
+        assert_eq!(tool_timeout_for("agent_send"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("agent_spawn"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("file_read"), Duration::from_secs(120));
+        assert_eq!(tool_timeout_for("shell_exec"), Duration::from_secs(120));
     }
 
     #[test]

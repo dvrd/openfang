@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
+use openfang_channels::bridge::channel_command_specs;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
@@ -366,7 +367,11 @@ pub async fn send_message(
     // (not as a separate session message which the LLM may not process).
     let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
     } else {
         None
     };
@@ -574,9 +579,7 @@ pub async fn get_agent_session(
                                         msg.get_mut("tools").and_then(|v| v.as_array_mut())
                                     {
                                         if let Some(tool_obj) = tools_arr.get_mut(tool_idx) {
-                                            let preview: String =
-                                                result.chars().take(2000).collect();
-                                            tool_obj["result"] = serde_json::Value::String(preview);
+                                            tool_obj["result"] = serde_json::Value::String(result.clone());
                                             tool_obj["is_error"] =
                                                 serde_json::Value::Bool(*is_error);
                                         }
@@ -1884,6 +1887,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
             ChannelField { key: "app_id", label: "App ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "cli_abc123", advanced: false },
             ChannelField { key: "app_secret_env", label: "App Secret", field_type: FieldType::Secret, env_var: Some("FEISHU_APP_SECRET"), required: true, placeholder: "abc123...", advanced: false },
             ChannelField { key: "region", label: "Region", field_type: FieldType::Text, env_var: None, required: false, placeholder: "cn or intl", advanced: false },
+            ChannelField { key: "mode", label: "Receive Mode", field_type: FieldType::Text, env_var: None, required: false, placeholder: "webhook|websocket", advanced: true },
             ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8453", advanced: true },
             ChannelField { key: "webhook_path", label: "Webhook Path", field_type: FieldType::Text, env_var: None, required: false, placeholder: "/feishu/webhook", advanced: true },
             ChannelField { key: "verification_token", label: "Verification Token", field_type: FieldType::Text, env_var: None, required: false, placeholder: "verify-token", advanced: true },
@@ -1892,7 +1896,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Create an app at open.feishu.cn (CN) or open.larksuite.com (International)", "Copy App ID and Secret", "Set region: cn (Feishu) or intl (Lark)"],
-        config_template: "[channels.feishu]\napp_id = \"\"\napp_secret_env = \"FEISHU_APP_SECRET\"\nregion = \"cn\"",
+        config_template: "[channels.feishu]\napp_id = \"\"\napp_secret_env = \"FEISHU_APP_SECRET\"\nregion = \"cn\"\nmode = \"websocket\"",
     },
     ChannelMeta {
         name: "dingtalk", display_name: "DingTalk", icon: "DT",
@@ -2311,6 +2315,23 @@ fn build_field_json(
 /// Find a channel definition by name.
 fn find_channel_meta(name: &str) -> Option<&'static ChannelMeta> {
     CHANNEL_REGISTRY.iter().find(|c| c.name == name)
+}
+
+#[cfg(test)]
+mod channel_meta_tests {
+    use super::*;
+
+    #[test]
+    fn feishu_channel_meta_includes_mode_field() {
+        let meta = find_channel_meta("feishu").expect("feishu channel meta should exist");
+        assert!(meta.fields.iter().any(|f| f.key == "mode"));
+    }
+
+    #[test]
+    fn feishu_channel_meta_template_includes_websocket_mode_default() {
+        let meta = find_channel_meta("feishu").expect("feishu channel meta should exist");
+        assert!(meta.config_template.contains("mode = \"websocket\""));
+    }
 }
 
 /// Serialize a channel's config to a JSON Value for pre-populating dashboard forms.
@@ -3552,6 +3573,15 @@ pub async fn uninstall_skill(
     }
 }
 
+/// POST /api/skills/reload — Hot-reload the skill registry from disk.
+///
+/// Called by the CLI after `openfang skill install` to notify the running
+/// daemon that new skill files were added to the skills directory (#752).
+pub async fn reload_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.kernel.reload_skills();
+    Json(serde_json::json!({"status": "reloaded"}))
+}
+
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
     Query(params): Query<HashMap<String, String>>,
@@ -3870,6 +3900,9 @@ pub async fn clawhub_install(
 
     match client.install(&req.slug, &skills_dir).await {
         Ok(result) => {
+            // Hot-reload so agents see the new skill immediately (#752)
+            state.kernel.reload_skills();
+
             let warnings: Vec<serde_json::Value> = result
                 .warnings
                 .iter()
@@ -4853,6 +4886,12 @@ pub async fn list_mcp_servers(State(state): State<Arc<AppState>>) -> impl IntoRe
                 openfang_types::config::McpTransportEntry::Sse { url } => {
                     serde_json::json!({
                         "type": "sse",
+                        "url": url,
+                    })
+                }
+                openfang_types::config::McpTransportEntry::Http { url } => {
+                    serde_json::json!({
+                        "type": "http",
                         "url": url,
                     })
                 }
@@ -10285,6 +10324,66 @@ pub async fn cron_job_status(
 }
 
 // ---------------------------------------------------------------------------
+// Run cron job on demand
+// ---------------------------------------------------------------------------
+
+/// POST /api/cron/jobs/{id}/run — Trigger a cron job immediately.
+///
+/// Returns `{"status": "triggered", "job_id": "..."}` and spawns the execution
+/// in the background.  The job's status can be polled via
+/// `GET /api/cron/jobs/{id}/status`.
+pub async fn run_cron_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "error": "Invalid job ID"})),
+            );
+        }
+    };
+    let job_id = openfang_types::scheduler::CronJobId(uuid);
+
+    // Atomically check existence + enabled + reserve next_run in one lock hold.
+    let job = match state.kernel.cron_scheduler.try_claim_for_run(job_id) {
+        Ok(j) => j,
+        Err(openfang_kernel::cron::ClaimError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "error", "error": "Job not found"})),
+            );
+        }
+        Err(openfang_kernel::cron::ClaimError::Disabled) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "error": "Job is disabled"})),
+            );
+        }
+    };
+
+    // Spawn execution in the background so we don't block the HTTP response.
+    let kernel = Arc::clone(&state.kernel);
+    let job_name = job.name.clone();
+    tokio::spawn(async move {
+        match kernel.cron_run_job(&job).await {
+            Ok(_) => tracing::info!(job = %job_name, "On-demand cron job completed"),
+            Err(e) => tracing::warn!(job = %job_name, error = %e, "On-demand cron job failed"),
+        }
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "triggered",
+            "job_id": id,
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Webhook trigger endpoints
 // ---------------------------------------------------------------------------
 
@@ -10639,21 +10738,24 @@ pub async fn pairing_notify(
 
 /// GET /api/commands — List available chat commands (for dynamic slash menu).
 pub async fn list_commands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut commands = vec![
-        serde_json::json!({"cmd": "/help", "desc": "Show available commands"}),
-        serde_json::json!({"cmd": "/new", "desc": "Reset session (clear history)"}),
-        serde_json::json!({"cmd": "/compact", "desc": "Trigger LLM session compaction"}),
-        serde_json::json!({"cmd": "/model", "desc": "Show or switch model (/model [name])"}),
-        serde_json::json!({"cmd": "/stop", "desc": "Cancel current agent run"}),
-        serde_json::json!({"cmd": "/usage", "desc": "Show session token usage & cost"}),
-        serde_json::json!({"cmd": "/think", "desc": "Toggle extended thinking (/think [on|off|stream])"}),
+    let mut commands: Vec<serde_json::Value> = channel_command_specs()
+        .iter()
+        .map(|spec| {
+            serde_json::json!({
+                "cmd": format!("/{}", spec.name),
+                "desc": spec.desc,
+                "source": "channel",
+            })
+        })
+        .collect();
+
+    commands.extend([
         serde_json::json!({"cmd": "/context", "desc": "Show context window usage & pressure"}),
         serde_json::json!({"cmd": "/verbose", "desc": "Cycle tool detail level (/verbose [off|on|full])"}),
         serde_json::json!({"cmd": "/queue", "desc": "Check if agent is processing"}),
-        serde_json::json!({"cmd": "/status", "desc": "Show system status"}),
         serde_json::json!({"cmd": "/clear", "desc": "Clear chat display"}),
         serde_json::json!({"cmd": "/exit", "desc": "Disconnect from agent"}),
-    ];
+    ]);
 
     // Add skill-registered tool names as potential commands
     if let Ok(registry) = state.kernel.skill_registry.read() {

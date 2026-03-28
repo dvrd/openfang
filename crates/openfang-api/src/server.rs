@@ -379,6 +379,10 @@ pub async fn build_router(
             axum::routing::post(routes::uninstall_skill),
         )
         .route(
+            "/api/skills/reload",
+            axum::routing::post(routes::reload_skills),
+        )
+        .route(
             "/api/marketplace/search",
             axum::routing::get(routes::marketplace_search),
         )
@@ -628,6 +632,10 @@ pub async fn build_router(
         .route(
             "/api/cron/jobs/{id}/status",
             axum::routing::get(routes::cron_job_status),
+        )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(routes::run_cron_job),
         )
         // Webhook trigger endpoints (external event injection)
         .route("/hooks/wake", axum::routing::post(routes::webhook_wake))

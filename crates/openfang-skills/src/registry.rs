@@ -636,7 +636,12 @@ input_schema = { type = "object" }
         registry.load_all().unwrap();
         assert_eq!(registry.count(), 1);
         assert_eq!(
-            registry.get("shared-skill").unwrap().manifest.skill.description,
+            registry
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
             "Global version"
         );
 
@@ -645,9 +650,18 @@ input_schema = { type = "object" }
         snapshot.load_workspace_skills(ws_dir.path()).unwrap();
 
         // The workspace version must override the global version
-        assert_eq!(snapshot.count(), 1, "Duplicate should be overwritten, not added");
         assert_eq!(
-            snapshot.get("shared-skill").unwrap().manifest.skill.description,
+            snapshot.count(),
+            1,
+            "Duplicate should be overwritten, not added"
+        );
+        assert_eq!(
+            snapshot
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
             "Workspace override version",
             "Workspace skill must override global skill (#808)"
         );
@@ -716,6 +730,63 @@ input_schema = { type = "object" }
             snapshot.get("beta").unwrap().manifest.skill.version,
             "0.1.0",
             "Global beta should remain unchanged"
+        );
+    }
+
+    /// #824: load_workspace_skills must return the count of workspace skills loaded,
+    /// even when a workspace skill overrides a global skill with the same HashMap key.
+    /// The old doctor code computed `total - bundled_count` which underreported when
+    /// an override didn't increase total_loaded.
+    #[test]
+    fn test_workspace_override_returns_correct_count() {
+        let global_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        // One global skill named "shared"
+        create_test_skill(global_dir.path(), "shared");
+
+        // Workspace skill with the SAME name — override
+        let ws_shared = ws_dir.path().join("shared");
+        std::fs::create_dir_all(&ws_shared).unwrap();
+        std::fs::write(
+            ws_shared.join("skill.toml"),
+            r#"
+[skill]
+name = "shared"
+version = "2.0.0"
+description = "Workspace override"
+
+[runtime]
+type = "python"
+entry = "main.py"
+
+[[tools.provided]]
+name = "shared_tool"
+description = "Workspace tool"
+input_schema = { type = "object" }
+"#,
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 1, "One global skill loaded");
+
+        let ws_count = registry.load_workspace_skills(ws_dir.path()).unwrap();
+
+        // The return value must be 1, NOT 0.
+        // Before the #824 fix, doctor computed total(1) - bundled(1) = 0.
+        assert_eq!(
+            ws_count, 1,
+            "load_workspace_skills must report 1 even when overriding a global skill (#824)"
+        );
+        // Total registry count stays 1 because the override replaced, not added
+        assert_eq!(registry.count(), 1);
+        // But the skill is the workspace version
+        assert_eq!(
+            registry.get("shared").unwrap().manifest.skill.version,
+            "2.0.0",
+            "Workspace version should be active"
         );
     }
 }
