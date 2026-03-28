@@ -55,14 +55,23 @@ const MAX_HISTORY_MESSAGES: usize = 20;
 /// without actually calling any tools. Prevents hallucinated completions.
 fn phantom_action_detected(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
+    // SECURITY: Restrict to first-person claims to avoid false-positives on
+    // descriptive text like "The user sent a message on Telegram".
+    let first_person_claims = [
+        "i sent ", "i've sent ", "i have sent ",
+        "i posted ", "i've posted ", "i have posted ",
+        "i emailed ", "i've emailed ", "i have emailed ",
+        "i delivered ", "i've delivered ", "i have delivered ",
+        "i forwarded ", "i've forwarded ", "i have forwarded ",
+        "message sent", "successfully sent", "has been sent",
+        "has been delivered", "has been posted",
+    ];
     let channel_refs = [
         "telegram", "whatsapp", "slack", "discord", "email", "channel",
-        "message sent", "successfully sent", "has been sent",
     ];
-    let has_action = action_verbs.iter().any(|v| lower.contains(v));
+    let has_claim = first_person_claims.iter().any(|v| lower.contains(v));
     let has_channel = channel_refs.iter().any(|c| lower.contains(c));
-    has_action && has_channel
+    has_claim && has_channel
 }
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
@@ -306,6 +315,14 @@ pub async fn run_agent_loop(
     // Safety valve: trim excessively long message histories to prevent context overflow.
     // The full compaction system handles sophisticated summarization, but this prevents
     // the catastrophic case where 200+ messages cause instant context overflow.
+    // Capture canonical context message before trimming so it can be re-injected.
+    let canonical_context = manifest
+        .metadata
+        .get("canonical_context_msg")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     if messages.len() > MAX_HISTORY_MESSAGES {
         let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
         warn!(
@@ -319,6 +336,12 @@ pub async fn run_agent_loop(
         // pair across the cut boundary, leaving orphaned blocks that cause the LLM
         // to return empty responses (input_tokens=0).
         messages = crate::session_repair::validate_and_repair(&messages);
+
+        // Re-inject canonical context message at the front after trimming —
+        // the drain may have removed it from position 0.
+        if let Some(ref cc_msg) = canonical_context {
+            messages.insert(0, Message::user(cc_msg.clone()));
+        }
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -471,8 +494,13 @@ pub async fn run_agent_loop(
                         if is_silent_failure {
                             messages = crate::session_repair::validate_and_repair(&messages);
                         }
-                        messages.push(Message::assistant("[no response]".to_string()));
-                        messages.push(Message::user("Please provide your response.".to_string()));
+                        let retry_assistant = Message::assistant("[no response]".to_string());
+                        let retry_user = Message::user("Please provide your response.".to_string());
+                        messages.push(retry_assistant.clone());
+                        messages.push(retry_user.clone());
+                        // Keep session.messages in sync so history is consistent on save.
+                        session.messages.push(retry_assistant);
+                        session.messages.push(retry_user);
                         continue;
                     }
                 }
@@ -499,7 +527,7 @@ pub async fn run_agent_loop(
                 // channel action (send, post, email, etc.) but never actually
                 // called the corresponding tool, re-prompt once to force real
                 // tool usage instead of hallucinated completion.
-                let text = if !any_tools_executed && iteration == 0 && phantom_action_detected(&text) {
+                let text = if !any_tools_executed && phantom_action_detected(&text) {
                     warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
                     messages.push(Message::assistant(text));
                     messages.push(Message::user(
@@ -600,7 +628,11 @@ pub async fn run_agent_loop(
                     iterations: iteration + 1,
                     cost_usd: None,
                     silent: false,
-                    directives: Default::default(),
+                    directives: openfang_types::message::ReplyDirectives {
+                        reply_to: parsed_directives.reply_to,
+                        current_thread: parsed_directives.current_thread,
+                        silent: false,
+                    },
                 });
             }
             StopReason::ToolUse => {
@@ -765,6 +797,14 @@ pub async fn run_agent_loop(
                             }),
                         };
                         let _ = hook_reg.fire(&ctx);
+                    }
+
+                    // Record outcome for loop detection — detects when identical
+                    // tool calls produce identical results (stuck loops).
+                    if let Some(loop_warning) =
+                        loop_guard.record_outcome(&tool_call.name, &tool_call.input, &result.content)
+                    {
+                        warn!(tool = %tool_call.name, "Loop guard outcome warning: {loop_warning}");
                     }
 
                     // Dynamic truncation based on context budget (replaces flat MAX_TOOL_RESULT_CHARS)
@@ -1444,6 +1484,14 @@ pub async fn run_agent_loop_streaming(
     let mut total_usage = TokenUsage::default();
     let final_response;
 
+    // Capture canonical context before trimming so it can be re-injected (streaming path).
+    let canonical_context = manifest
+        .metadata
+        .get("canonical_context_msg")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     // Safety valve: trim excessively long message histories to prevent context overflow.
     if messages.len() > MAX_HISTORY_MESSAGES {
         let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
@@ -1458,6 +1506,12 @@ pub async fn run_agent_loop_streaming(
         // pair across the cut boundary, leaving orphaned blocks that cause the LLM
         // to return empty responses (input_tokens=0).
         messages = crate::session_repair::validate_and_repair(&messages);
+
+        // Re-inject canonical context message at the front after trimming —
+        // the drain may have removed it from position 0.
+        if let Some(ref cc_msg) = canonical_context {
+            messages.insert(0, Message::user(cc_msg.to_string()));
+        }
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -1631,8 +1685,13 @@ pub async fn run_agent_loop_streaming(
                         if is_silent_failure {
                             messages = crate::session_repair::validate_and_repair(&messages);
                         }
-                        messages.push(Message::assistant("[no response]".to_string()));
-                        messages.push(Message::user("Please provide your response.".to_string()));
+                        let retry_assistant = Message::assistant("[no response]".to_string());
+                        let retry_user = Message::user("Please provide your response.".to_string());
+                        messages.push(retry_assistant.clone());
+                        messages.push(retry_user.clone());
+                        // Keep session.messages in sync so history is consistent on save.
+                        session.messages.push(retry_assistant);
+                        session.messages.push(retry_user);
                         continue;
                     }
                 }
@@ -1742,7 +1801,11 @@ pub async fn run_agent_loop_streaming(
                     iterations: iteration + 1,
                     cost_usd: None,
                     silent: false,
-                    directives: Default::default(),
+                    directives: openfang_types::message::ReplyDirectives {
+                        reply_to: parsed_directives_s.reply_to,
+                        current_thread: parsed_directives_s.current_thread,
+                        silent: false,
+                    },
                 });
             }
             StopReason::ToolUse => {
@@ -1903,6 +1966,13 @@ pub async fn run_agent_loop_streaming(
                             }),
                         };
                         let _ = hook_reg.fire(&ctx);
+                    }
+
+                    // Record outcome for loop detection (streaming path).
+                    if let Some(loop_warning) =
+                        loop_guard.record_outcome(&tool_call.name, &tool_call.input, &result.content)
+                    {
+                        warn!(tool = %tool_call.name, "Loop guard outcome warning: {loop_warning}");
                     }
 
                     // Dynamic truncation based on context budget (replaces flat MAX_TOOL_RESULT_CHARS)
