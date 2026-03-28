@@ -45,3 +45,5 @@ Thumbs.db
 *.swo
 *~
 .serena/
+.cruft/
+.godmode/
