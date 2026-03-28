@@ -471,9 +471,8 @@ impl LlmDriver for AnthropicDriver {
                                 input_json,
                             }) = blocks.get(block_idx)
                             {
-                                let input: serde_json::Value =
-                                    serde_json::from_str(input_json)
-                                        .unwrap_or_else(|_| serde_json::json!({}));
+                                let input: serde_json::Value = serde_json::from_str(input_json)
+                                    .unwrap_or_else(|_| serde_json::json!({}));
                                 let _ = tx
                                     .send(StreamEvent::ToolUseEnd {
                                         id: id.clone(),
@@ -521,9 +520,8 @@ impl LlmDriver for AnthropicDriver {
                         name,
                         input_json,
                     } => {
-                        let input: serde_json::Value =
-                            serde_json::from_str(&input_json)
-                                .unwrap_or_else(|_| serde_json::json!({}));
+                        let input: serde_json::Value = serde_json::from_str(&input_json)
+                            .unwrap_or_else(|_| serde_json::json!({}));
                         content.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: name.clone(),

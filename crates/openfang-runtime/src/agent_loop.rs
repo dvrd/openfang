@@ -18,6 +18,9 @@ use openfang_memory::session::Session;
 use openfang_memory::MemorySubstrate;
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::agent::{AgentManifest, FallbackModel};
+use openfang_types::model_catalog::{
+    DOUBAO_PROVIDER_ID, VOLCENGINE_CODING_PROVIDER_ID, VOLCENGINE_PROVIDER_ID,
+};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
 use openfang_types::message::{
@@ -44,6 +47,20 @@ const BASE_RETRY_DELAY_MS: u64 = 1000;
 /// Raised from 60s to 120s for browser automation and long-running builds.
 const TOOL_TIMEOUT_SECS: u64 = 120;
 
+/// Timeout for inter-agent tool calls (seconds).
+/// Agent delegation (agent_send, agent_spawn) can involve a full agent loop on the
+/// target, so these need a significantly longer timeout than regular tools.
+const AGENT_TOOL_TIMEOUT_SECS: u64 = 600;
+
+/// Returns the appropriate timeout duration for a given tool name.
+/// Inter-agent calls get a longer timeout since they may trigger full agent loops.
+fn tool_timeout_for(tool_name: &str) -> Duration {
+    match tool_name {
+        "agent_send" | "agent_spawn" => Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS),
+        _ => Duration::from_secs(TOOL_TIMEOUT_SECS),
+    }
+}
+
 /// Maximum consecutive MaxTokens continuations before returning partial response.
 /// Raised from 3 to 5 to allow longer-form generation.
 const MAX_CONTINUATIONS: u32 = 5;
@@ -57,8 +74,15 @@ fn phantom_action_detected(text: &str) -> bool {
     let lower = text.to_lowercase();
     let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
     let channel_refs = [
-        "telegram", "whatsapp", "slack", "discord", "email", "channel",
-        "message sent", "successfully sent", "has been sent",
+        "telegram",
+        "whatsapp",
+        "slack",
+        "discord",
+        "email",
+        "channel",
+        "message sent",
+        "successfully sent",
+        "has been sent",
     ];
     let has_action = action_verbs.iter().any(|v| lower.contains(v));
     let has_channel = channel_refs.iter().any(|c| lower.contains(c));
@@ -86,15 +110,30 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
 /// but the upstream API expects just `org/model` (e.g. `google/gemini-2.5-flash`).
 pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
-    let slash_prefix = format!("{}/", provider);
-    let colon_prefix = format!("{}:", provider);
-    if model.starts_with(&slash_prefix) {
+    let provider_normalized = provider.replace('_', "-");
+    let slash_prefix = format!("{}/", provider_normalized);
+    let colon_prefix = format!("{}:", provider_normalized);
+    let mut result = if model.starts_with(&slash_prefix) {
         model[slash_prefix.len()..].to_string()
     } else if model.starts_with(&colon_prefix) {
         model[colon_prefix.len()..].to_string()
     } else {
         model.to_string()
+    };
+    // Strip "ark/" catalog namespace prefix before sending to Ark API.
+    // "ark/" is used internally to disambiguate Ark marketplace models from
+    // native provider models with the same name (e.g. ark/minimax-m2.5 vs
+    // minimax provider's minimax-m2.5). The Ark API endpoint expects the bare
+    // model name (e.g. "minimax-m2.5"), not the namespaced form.
+    // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
+    if (provider == VOLCENGINE_CODING_PROVIDER_ID
+        || provider == VOLCENGINE_PROVIDER_ID
+        || provider == DOUBAO_PROVIDER_ID)
+        && result.starts_with("ark/")
+    {
+        result = result["ark/".len()..].to_string();
     }
+    result
 }
 
 /// Default context window size (tokens) for token-based trimming.
@@ -272,7 +311,9 @@ pub async fn run_agent_loop(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -389,7 +430,14 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(&*driver, request, Some(provider_name), None, &manifest.fallback_models).await?;
+        let mut response = call_with_retry(
+            &*driver,
+            request,
+            Some(provider_name),
+            None,
+            &manifest.fallback_models,
+        )
+        .await?;
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -460,7 +508,10 @@ pub async fn run_agent_loop(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -505,7 +556,10 @@ pub async fn run_agent_loop(
                 // channel action (send, post, email, etc.) but never actually
                 // called the corresponding tool, re-prompt once to force real
                 // tool usage instead of hallucinated completion.
-                let text = if !any_tools_executed && iteration == 0 && phantom_action_detected(&text) {
+                let text = if !any_tools_executed
+                    && iteration == 0
+                    && phantom_action_detected(&text)
+                {
                     warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
                     messages.push(Message::assistant(text));
                     messages.push(Message::user(
@@ -716,8 +770,10 @@ pub async fn run_agent_loop(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -746,12 +802,12 @@ pub async fn run_agent_loop(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -1419,7 +1475,9 @@ pub async fn run_agent_loop_streaming(
     // The LLM already received them via llm_messages above.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
-            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            let had_images = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }));
             if had_images {
                 blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
                 if blocks.is_empty() {
@@ -1513,6 +1571,14 @@ pub async fn run_agent_loop_streaming(
                     warn!("Stream consumer disconnected while sending context trim warning");
                 }
             }
+        }
+
+        // Re-validate tool_call/tool_result pairing after overflow drains
+        // which may have broken assistant→tool ordering invariants.
+        // (Matches the non-streaming loop; fixes Qwen3.5-plus "tool_calls must
+        // be followed by tool messages" errors after context overflow recovery.)
+        if recovery != RecoveryStage::None {
+            messages = crate::session_repair::validate_and_repair(&messages);
         }
 
         // Context guard: compact oversized tool results before LLM call
@@ -1620,7 +1686,10 @@ pub async fn run_agent_loop_streaming(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
+                if text.trim().is_empty()
+                    && response.tool_calls.is_empty()
+                    && !response.has_any_content()
+                {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -1854,8 +1923,10 @@ pub async fn run_agent_loop_streaming(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -1884,12 +1955,12 @@ pub async fn run_agent_loop_streaming(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -2901,6 +2972,30 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
+    fn test_strip_provider_prefix_alibaba() {
+        // alibaba: underscore provider normalizes to hyphen prefix
+        assert_eq!(
+            strip_provider_prefix("alibaba-coding-plan/qwen3.5-plus", "alibaba_coding_plan"),
+            "qwen3.5-plus"
+        );
+        // no prefix passthrough
+        assert_eq!(
+            strip_provider_prefix("qwen3.5-plus", "alibaba_coding_plan"),
+            "qwen3.5-plus"
+        );
+        // regression: kimi_coding model passes through unchanged
+        assert_eq!(
+            strip_provider_prefix("kimi-for-coding", "kimi_coding"),
+            "kimi-for-coding"
+        );
+        // regression: zhipu_coding model passes through unchanged
+        assert_eq!(
+            strip_provider_prefix("codegeex-4", "zhipu_coding"),
+            "codegeex-4"
+        );
+    }
+
+    #[test]
     fn test_max_iterations_constant() {
         assert_eq!(MAX_ITERATIONS, 50);
     }
@@ -2953,11 +3048,56 @@ mod tests {
     #[test]
     fn test_tool_timeout_constant() {
         assert_eq!(TOOL_TIMEOUT_SECS, 120);
+        assert_eq!(AGENT_TOOL_TIMEOUT_SECS, 600);
+    }
+
+    #[test]
+    fn test_tool_timeout_for_agent_tools() {
+        assert_eq!(tool_timeout_for("agent_send"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("agent_spawn"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("file_read"), Duration::from_secs(120));
+        assert_eq!(tool_timeout_for("shell_exec"), Duration::from_secs(120));
     }
 
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    #[test]
+    fn test_strip_ark_catalog_prefix_for_volcengine_coding() {
+        // ark/ is catalog-only; Ark API expects bare name
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine_coding"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_volcengine() {
+        // Should strip ark/ for volcengine
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_doubao() {
+        // Should strip ark/ for doubao provider alias
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "doubao"),
+            "some-model"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_not_stripped_for_other_providers() {
+        // Must NOT strip ark/ for non-volcengine providers
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "openai"),
+            "ark/some-model"
+        );
     }
 
     // --- Integration tests for empty response guards ---

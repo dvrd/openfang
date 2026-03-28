@@ -32,6 +32,7 @@ const PROVIDER_ENV_VARS: &[(&str, &str)] = &[
     ("ANTHROPIC_API_KEY", "Anthropic"),
     ("OPENAI_API_KEY", "OpenAI"),
     ("DEEPSEEK_API_KEY", "DeepSeek"),
+    ("VOLCENGINE_API_KEY", "Volcano Engine"),
     ("GEMINI_API_KEY", "Gemini"),
     ("GOOGLE_API_KEY", "Gemini"),
     ("GROQ_API_KEY", "Groq"),
@@ -47,7 +48,7 @@ const PROVIDER_ENV_VARS: &[(&str, &str)] = &[
 /// Returns (provider_name, env_var_name) for the first detected key, or None.
 fn detect_provider() -> Option<(&'static str, &'static str)> {
     for &(var, name) in PROVIDER_ENV_VARS {
-        if std::env::var(var).is_ok() {
+        if std::env::var(var).ok().filter(|v| !v.is_empty()).is_some() {
             return Some((name, var));
         }
     }

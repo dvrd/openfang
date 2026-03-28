@@ -4,15 +4,16 @@
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
-    AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL,
+    ALIBABA_CODING_PLAN_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL,
+    CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
+    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL,
+    MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -81,13 +82,23 @@ impl ModelCatalog {
             }
 
             // Primary: check the provider's declared env var
-            let has_key = std::env::var(&provider.api_key_env).is_ok();
+            let has_key = std::env::var(&provider.api_key_env)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some();
 
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
-                "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "gemini" => std::env::var("GOOGLE_API_KEY")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .is_some(),
                 "codex" => {
-                    std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
+                    std::env::var("OPENAI_API_KEY")
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .is_some()
+                        || read_codex_credential().is_some()
                 }
                 // claude-code is handled above (before key_required check)
                 _ => false,
@@ -170,6 +181,72 @@ impl ModelCatalog {
             return self.models.iter().find(|m| m.id == *canonical);
         }
         None
+    }
+
+    /// Find a model by ID/alias, preferring entries from the given provider.
+    ///
+    /// When `provider` is specified, this method first looks for a matching model
+    /// that belongs to that provider. If no provider-scoped match is found, it
+    /// falls back to the normal `find_model` resolution.
+    ///
+    /// This prevents issue #833 where switching to model "kimi-2.5" with provider
+    /// "model_studio" would incorrectly resolve to moonshot's builtin kimi-2.5
+    /// because `find_model` does not consider provider affinity.
+    pub fn find_model_for_provider(
+        &self,
+        id_or_alias: &str,
+        provider: &str,
+    ) -> Option<&ModelCatalogEntry> {
+        let lower = id_or_alias.to_lowercase();
+
+        // First pass: look for a match scoped to the requested provider.
+        // Priority: exact-case ID > case-insensitive ID > display-name.
+        let mut provider_ci: Option<&ModelCatalogEntry> = None;
+
+        for m in &self.models {
+            if m.provider != provider {
+                continue;
+            }
+            if m.id.to_lowercase() != lower {
+                continue;
+            }
+            if m.id == id_or_alias {
+                return Some(m); // Exact-case match on the right provider — best result
+            }
+            if provider_ci.is_none() {
+                provider_ci = Some(m);
+            }
+        }
+
+        if let Some(entry) = provider_ci {
+            return Some(entry);
+        }
+
+        // Display-name match scoped to provider
+        if let Some(entry) = self
+            .models
+            .iter()
+            .find(|m| m.provider == provider && m.display_name.to_lowercase() == lower)
+        {
+            return Some(entry);
+        }
+
+        // Alias resolution scoped to provider: resolve the alias, then check if
+        // the canonical model belongs to the requested provider.
+        if let Some(canonical) = self.aliases.get(&lower) {
+            if let Some(entry) = self
+                .models
+                .iter()
+                .find(|m| m.id == *canonical && m.provider == provider)
+            {
+                return Some(entry);
+            }
+        }
+
+        // No provider-scoped match — fall back to normal resolution so callers
+        // still get a result when the model genuinely doesn't exist on this provider
+        // (e.g. user typo, or a model name that only exists elsewhere).
+        self.find_model(id_or_alias)
     }
 
     /// Resolve an alias to a canonical model ID, or None if not an alias.
@@ -699,12 +776,23 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
-        // ── Chinese providers (5) ────────────────────────────────────
+        // ── Chinese providers (6) ────────────────────────────────────
         ProviderInfo {
             id: "qwen".into(),
             display_name: "Qwen (Alibaba)".into(),
             api_key_env: "DASHSCOPE_API_KEY".into(),
             base_url: QWEN_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        // Provider ID uses underscores ("alibaba_coding_plan") while model IDs use hyphens ("alibaba-coding-plan/...").
+        // This matches the pattern of zhipu_coding, kimi_coding, etc. Do not normalize — create_driver matches on underscore form.
+        ProviderInfo {
+            id: "alibaba_coding_plan".into(),
+            display_name: "Alibaba Coding Plan (Intl)".into(),
+            api_key_env: "ALIBABA_CODING_PLAN_API_KEY".into(),
+            base_url: ALIBABA_CODING_PLAN_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -784,7 +872,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── Volcano Engine (Doubao) ──────────────────────────────────
         ProviderInfo {
             id: "volcengine".into(),
-            display_name: "Volcano Engine (Doubao)".into(),
+            display_name: "Volcano Engine".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
             key_required: true,
@@ -913,6 +1001,11 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("minimax-highspeed", "MiniMax-M2.5-highspeed"),
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
+        // Alibaba Coding Plan aliases
+        ("alibaba-coding-plan", "alibaba-coding-plan/qwen3.5-plus"),
+        // "qwen3-coder" (with digit 3) → alibaba-coding-plan coding endpoint
+        // "qwen-coder"  (no digit)     → qwen-code/qwen3-coder (direct Qwen Code model)
+        ("qwen3-coder", "alibaba-coding-plan/qwen3-coder-plus"),
         // Codex aliases
         ("codex", "codex/gpt-5.4"),
         ("codex-5.4", "codex/gpt-5.4"),
@@ -3169,6 +3262,138 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["abab7".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // Alibaba Coding Plan International (8)
+        // All pricing set to $0 — actual cost is fixed monthly subscription.
+        // Provides multi-provider access: Qwen, Zhipu GLM, Moonshot Kimi, MiniMax.
+        // See: https://www.alibabacloud.com/help/en/model-studio/coding-plan
+        // ══════════════════════════════════════════════════════════════
+        // ── Qwen models (4) ──────────────────────────────────────────
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3.5-plus".into(),
+            display_name: "Qwen 3.5 Plus (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            // The Coding Plan endpoint (coding-intl.dashscope.aliyuncs.com) is a
+            // coding-specialized endpoint that does not expose multimodal routes.
+            // Use the standard Qwen provider if vision is required.
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-max-2026-01-23".into(),
+            display_name: "Qwen 3 Max 2026-01-23 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-coder-plus".into(),
+            display_name: "Qwen 3 Coder Plus (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/qwen3-coder-next".into(),
+            display_name: "Qwen 3 Coder Next (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── Zhipu / GLM via Coding Plan (2) ─────────────────────────
+        // API receives "glm-5" / "glm-4.7" after prefix stripping
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/glm-5".into(),
+            display_name: "GLM-5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Frontier,
+            context_window: 202_752,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/glm-4.7".into(),
+            display_name: "GLM-4.7 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 202_752,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── Moonshot / Kimi via Coding Plan (1) ─────────────────────
+        // API receives "kimi-k2.5" after prefix stripping
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            // The Coding Plan endpoint (coding-intl.dashscope.aliyuncs.com) is a
+            // coding-specialized endpoint that does not expose multimodal routes.
+            // Use the standard Kimi/Moonshot provider if vision is required.
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ── MiniMax via Coding Plan (1) ──────────────────────────────
+        // The bare alias "minimax-m2.5" is claimed by the MiniMax provider. Users must specify
+        // the full "alibaba-coding-plan/minimax-m2.5" ID to use this model via the Coding Plan endpoint.
+        ModelCatalogEntry {
+            id: "alibaba-coding-plan/minimax-m2.5".into(),
+            display_name: "MiniMax M2.5 (Alibaba Coding Plan)".into(),
+            provider: "alibaba_coding_plan".into(),
+            tier: ModelTier::Smart,
+            context_window: 204_800,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Zhipu AI / GLM (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -3439,8 +3664,155 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
+        // Volcano Engine Coding Plan (9)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "ark-code-latest".into(),
+            display_name: "Ark Code (Latest)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["ark-code".into()],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-code".into(),
+            display_name: "Doubao Seed 2.0 Code (Coding Plan)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-pro".into(),
+            display_name: "Doubao Seed 2.0 Pro".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-lite".into(),
+            display_name: "Doubao Seed 2.0 Lite (Ark Coding)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Fast,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-code-ark".into(),
+            display_name: "Doubao Seed Code (Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // Third-party models available via Ark marketplace.
+        // The "ark/" prefix is the canonical ID for these Ark marketplace models to avoid
+        // collisions with native provider entries (minimax, zhipu, moonshot).
+        // The bare model name is kept as an alias only where no collision exists.
+        // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
+        ModelCatalogEntry {
+            id: "ark/minimax-m2.5".into(),
+            display_name: "MiniMax M2.5 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "minimax-m2.5" NOT added as alias — already canonical on the minimax provider entry
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "ark/glm-4.7".into(),
+            display_name: "GLM 4.7 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Balanced,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "glm-4.7" NOT added as alias — already canonical on the zhipu provider entry
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "ark/deepseek-v3.2".into(),
+            display_name: "DeepSeek V3.2 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "deepseek-v3.2" kept as alias — no collision with other providers
+            aliases: vec!["deepseek-v3.2".into()],
+        },
+        ModelCatalogEntry {
+            id: "ark/kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "kimi-k2.5" NOT added as alias — already canonical on the moonshot provider entry
+            aliases: vec![],
+        },
+
+        // ══════════════════════════════════════════════════════════════
         // Volcano Engine / Doubao (4)
         // ══════════════════════════════════════════════════════════════
+        //
+        // NOTE on separators: the volcengine provider uses hyphen-only IDs
+        // (e.g. "doubao-seed-2-0-lite") because the Ark /api/v3 endpoint uses
+        // endpoint-access-point names that don't contain dots. The
+        // volcengine_coding entries above use dot notation
+        // (e.g. "doubao-seed-2.0-lite") which is the model version string used
+        // by the /api/coding/v3 endpoint. These are different endpoint paths
+        // and the IDs must not be unified.
         ModelCatalogEntry {
             id: "doubao-seed-1-6-251015".into(),
             display_name: "Doubao Seed 1.6 Pro".into(),
@@ -3453,6 +3825,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
+            // "doubao" also maps to the volcengine provider in provider_defaults() — intentional dual alias
+            // Also matched as a provider alias in provider_defaults() — keep in sync
             aliases: vec!["doubao".into(), "doubao-pro".into()],
         },
         ModelCatalogEntry {
@@ -3483,9 +3857,10 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["doubao-mini".into()],
         },
+        // Standard plan (/api/v3) variant; see volcengine_coding for the coding-plan endpoint
         ModelCatalogEntry {
             id: "doubao-seed-code".into(),
-            display_name: "Doubao Seed Code".into(),
+            display_name: "Doubao Seed Code (Standard Plan)".into(),
             provider: "volcengine".into(),
             tier: ModelTier::Smart,
             context_window: 131_072,
@@ -4118,6 +4493,10 @@ mod tests {
         assert!(catalog.get_provider("moonshot").is_some());
         assert!(catalog.get_provider("qianfan").is_some());
         assert!(catalog.get_provider("bedrock").is_some());
+        // Alibaba Coding Plan provider
+        assert!(catalog.get_provider("alibaba_coding_plan").is_some());
+        let provider = catalog.get_provider("alibaba_coding_plan").unwrap();
+        assert_eq!(provider.api_key_env, "ALIBABA_CODING_PLAN_API_KEY");
     }
 
     #[test]
@@ -4155,6 +4534,109 @@ mod tests {
         let abab7 = catalog.find_model("abab7-chat").unwrap();
         assert_eq!(abab7.provider, "minimax");
         assert!(abab7.supports_vision);
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_models() {
+        let catalog = ModelCatalog::new();
+
+        // Test all 8 models are present
+        let models = catalog.models_by_provider("alibaba_coding_plan");
+        assert_eq!(models.len(), 8);
+
+        // Test qwen3.5-plus — flagship model with 1M context
+        // Note: supports_vision is false — the Coding Plan endpoint is coding-specialized
+        let qwen35 = catalog
+            .find_model("alibaba-coding-plan/qwen3.5-plus")
+            .unwrap();
+        assert_eq!(qwen35.display_name, "Qwen 3.5 Plus (Alibaba Coding Plan)");
+        assert_eq!(qwen35.tier, ModelTier::Smart);
+        assert_eq!(qwen35.context_window, 1_000_000);
+        assert_eq!(qwen35.max_output_tokens, 65_536);
+        assert!(qwen35.supports_tools);
+        assert!(!qwen35.supports_vision);
+        assert!(qwen35.supports_streaming);
+        // Subscription-based pricing
+        assert!((qwen35.input_cost_per_m).abs() < f64::EPSILON);
+        assert!((qwen35.output_cost_per_m).abs() < f64::EPSILON);
+
+        // Test qwen3-max-2026-01-23 — frontier model
+        let qwen3max = catalog
+            .find_model("alibaba-coding-plan/qwen3-max-2026-01-23")
+            .unwrap();
+        assert_eq!(qwen3max.tier, ModelTier::Frontier);
+        assert_eq!(qwen3max.context_window, 262_144);
+        assert!(!qwen3max.supports_vision);
+        assert!(qwen3max.supports_tools);
+
+        // Test qwen3-coder-plus — coding model with 1M context
+        let qwen3coder = catalog
+            .find_model("alibaba-coding-plan/qwen3-coder-plus")
+            .unwrap();
+        assert_eq!(qwen3coder.context_window, 1_000_000);
+        assert!(!qwen3coder.supports_vision);
+        assert!(qwen3coder.supports_tools);
+
+        // Test qwen3-coder alias — registered in builtin_aliases() which uses
+        // or_insert_with (first-wins), so explicit builtin entries take priority
+        // over any model-level aliases vecs that might also claim the same key.
+        let qwen3coder_alias = catalog.find_model("qwen3-coder").unwrap();
+        assert_eq!(qwen3coder_alias.id, "alibaba-coding-plan/qwen3-coder-plus");
+
+        // Verify qwen3 alias still resolves to qwen provider (not overwritten by alibaba aliases)
+        let qwen3 = catalog.find_model("qwen3").unwrap();
+        assert_eq!(qwen3.provider, "qwen");
+
+        // Test glm-5 — Zhipu model via Coding Plan
+        let glm5 = catalog.find_model("alibaba-coding-plan/glm-5").unwrap();
+        assert_eq!(glm5.display_name, "GLM-5 (Alibaba Coding Plan)");
+        assert_eq!(glm5.tier, ModelTier::Frontier);
+        assert_eq!(glm5.context_window, 202_752);
+        assert_eq!(glm5.max_output_tokens, 32_768);
+        assert!(glm5.supports_tools);
+        assert!(!glm5.supports_vision);
+
+        // Test glm-4.7
+        let glm47 = catalog.find_model("alibaba-coding-plan/glm-4.7").unwrap();
+        assert_eq!(glm47.tier, ModelTier::Smart);
+        assert_eq!(glm47.context_window, 202_752);
+
+        // Test kimi-k2.5 — Moonshot model via Coding Plan (no vision on this endpoint)
+        let kimi = catalog.find_model("alibaba-coding-plan/kimi-k2.5").unwrap();
+        assert_eq!(kimi.display_name, "Kimi K2.5 (Alibaba Coding Plan)");
+        assert_eq!(kimi.context_window, 262_144);
+        assert!(!kimi.supports_vision);
+        assert!(kimi.supports_tools);
+
+        // Test MiniMax-M2.5 via Coding Plan
+        let minimax = catalog
+            .find_model("alibaba-coding-plan/minimax-m2.5")
+            .unwrap();
+        assert_eq!(minimax.display_name, "MiniMax M2.5 (Alibaba Coding Plan)");
+        assert_eq!(minimax.context_window, 204_800);
+        assert_eq!(minimax.max_output_tokens, 32_768);
+        assert!(minimax.supports_tools);
+        assert!(!minimax.supports_vision);
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_aliases() {
+        let catalog = ModelCatalog::new();
+
+        // Test alibaba-coding-plan alias resolves to qwen3.5-plus
+        let alias1 = catalog.find_model("alibaba-coding-plan").unwrap();
+        assert_eq!(alias1.id, "alibaba-coding-plan/qwen3.5-plus");
+
+        // Test qwen3-coder alias resolves to qwen3-coder-plus
+        assert_eq!(catalog.find_model("qwen3-coder").unwrap().id, "alibaba-coding-plan/qwen3-coder-plus");
+
+        // Regression: "qwen-coder" (no digit 3) must remain distinct — it maps to the direct
+        // Qwen Code model, not the Alibaba Coding Plan endpoint.
+        assert_eq!(catalog.find_model("qwen-coder").unwrap().id, "qwen-code/qwen3-coder");
+
+        // Test case-insensitive alias resolution
+        let alias_lower = catalog.find_model("Alibaba-Coding-Plan").unwrap();
+        assert_eq!(alias_lower.id, "alibaba-coding-plan/qwen3.5-plus");
     }
 
     #[test]
@@ -4411,5 +4893,162 @@ mod tests {
         let lower = catalog.find_model("custom-model-7b").unwrap();
         assert_eq!(lower.tier, ModelTier::Local);
         assert_eq!(lower.provider, "ollama");
+    }
+
+    /// Regression test for #833: find_model_for_provider should prefer the entry
+    /// from the specified provider when multiple providers share the same model name.
+    ///
+    /// Scenario: a custom provider "model_studio" has a model "kimi-k2.5", and the
+    /// builtin "moonshot" provider also has "kimi-k2.5". When the user switches to
+    /// "kimi-k2.5" with provider "model_studio", we must resolve to model_studio's
+    /// entry, not moonshot's builtin.
+    #[test]
+    fn test_find_model_for_provider_prefers_specified_provider_833() {
+        let mut catalog = ModelCatalog::new();
+
+        // Verify the builtin moonshot entry exists
+        let builtin = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(builtin.provider, "moonshot");
+
+        // Add a custom model with the same name on a different provider
+        let added = catalog.add_custom_model(ModelCatalogEntry {
+            id: "kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (Model Studio)".into(),
+            provider: "model_studio".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        });
+        assert!(added, "custom model should be added (different provider)");
+
+        // Plain find_model returns the custom entry (Custom tier wins over builtin)
+        let plain = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(plain.tier, ModelTier::Custom);
+
+        // find_model_for_provider with "model_studio" must return model_studio's entry
+        let ms = catalog
+            .find_model_for_provider("kimi-k2.5", "model_studio")
+            .unwrap();
+        assert_eq!(ms.provider, "model_studio");
+        assert_eq!(ms.display_name, "Kimi K2.5 (Model Studio)");
+
+        // find_model_for_provider with "moonshot" must return moonshot's builtin
+        let moonshot = catalog
+            .find_model_for_provider("kimi-k2.5", "moonshot")
+            .unwrap();
+        assert_eq!(moonshot.provider, "moonshot");
+        assert_eq!(moonshot.display_name, "Kimi K2.5");
+    }
+
+    /// Verify find_model_for_provider falls back to normal resolution when the
+    /// model doesn't exist on the requested provider.
+    #[test]
+    fn test_find_model_for_provider_fallback() {
+        let catalog = ModelCatalog::new();
+
+        // "claude-sonnet-4-20250514" only exists on "anthropic"
+        let entry = catalog
+            .find_model_for_provider("claude-sonnet-4-20250514", "nonexistent_provider")
+            .unwrap();
+        assert_eq!(entry.provider, "anthropic");
+    }
+
+    /// Verify find_model_for_provider is case-insensitive for the model name.
+    #[test]
+    fn test_find_model_for_provider_case_insensitive() {
+        let mut catalog = ModelCatalog::new();
+
+        catalog.add_custom_model(ModelCatalogEntry {
+            id: "My-Custom-LLM".into(),
+            display_name: "My Custom LLM".into(),
+            provider: "custom_provider".into(),
+            tier: ModelTier::Balanced,
+            context_window: 32_768,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        });
+
+        // Case-insensitive lookup with the correct provider
+        let found = catalog
+            .find_model_for_provider("my-custom-llm", "custom_provider")
+            .unwrap();
+        assert_eq!(found.provider, "custom_provider");
+        assert_eq!(found.id, "My-Custom-LLM");
+    }
+
+    #[test]
+    fn test_ark_alias_resolution() {
+        let catalog = ModelCatalog::new();
+        // ark/ IDs are now canonical — resolve_alias returns the id itself (no alias mapping needed)
+        // deepseek-v3.2 is still an alias pointing to ark/deepseek-v3.2
+        assert_eq!(catalog.resolve_alias("deepseek-v3.2"), Some("ark/deepseek-v3.2"));
+        // find_model via ark/ canonical ID returns the volcengine_coding entry directly.
+        let m25 = catalog.find_model("ark/minimax-m2.5").unwrap();
+        assert_eq!(m25.id, "ark/minimax-m2.5");
+        assert_eq!(m25.provider, "volcengine_coding");
+        // glm-4.7 canonical ID now belongs to ark entry; zhipu entry is unaffected.
+        let glm = catalog.find_model("ark/glm-4.7").unwrap();
+        assert_eq!(glm.id, "ark/glm-4.7");
+        assert_eq!(glm.provider, "volcengine_coding");
+        // deepseek-v3.2 exists only under volcengine_coding; bare alias still resolves.
+        let ds = catalog.find_model("ark/deepseek-v3.2").unwrap();
+        assert_eq!(ds.id, "ark/deepseek-v3.2");
+        assert_eq!(ds.provider, "volcengine_coding");
+        let ds_alias = catalog.find_model("deepseek-v3.2").unwrap();
+        assert_eq!(ds_alias.id, "ark/deepseek-v3.2");
+        let kimi = catalog.find_model("ark/kimi-k2.5").unwrap();
+        assert_eq!(kimi.id, "ark/kimi-k2.5");
+        assert_eq!(kimi.provider, "volcengine_coding");
+        // Native provider entries are unaffected by the ark/ rename
+        let minimax_native = catalog.find_model("minimax-m2.5").unwrap();
+        assert_eq!(minimax_native.provider, "minimax");
+        let glm_native = catalog.find_model("glm-4.7").unwrap();
+        assert_eq!(glm_native.provider, "zhipu");
+        let kimi_native = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(kimi_native.provider, "moonshot");
+    }
+
+    #[test]
+    fn test_doubao_alias_resolves_to_volcengine_model() {
+        let catalog = ModelCatalog::new();
+        // "doubao" alias should resolve to the model ID
+        let resolved = catalog.resolve_alias("doubao");
+        assert_eq!(resolved, Some("doubao-seed-1-6-251015"));
+        // The model should belong to the volcengine provider
+        let model = catalog.find_model("doubao-seed-1-6-251015").unwrap();
+        assert_eq!(model.provider, "volcengine");
+    }
+
+    #[test]
+    fn test_doubao_dual_role_consistency() {
+        use openfang_types::model_catalog::VOLCENGINE_BASE_URL;
+
+        // 1. The canonical VOLCENGINE_BASE_URL must point at volces.com
+        assert!(
+            VOLCENGINE_BASE_URL.contains("volces.com"),
+            "VOLCENGINE_BASE_URL must contain volces.com, got: {}",
+            VOLCENGINE_BASE_URL
+        );
+
+        // 2. The model found via the "doubao" alias must belong to the "volcengine" provider
+        let catalog = ModelCatalog::new();
+        let model = catalog
+            .find_model("doubao")
+            .expect("catalog.find_model(\"doubao\") must resolve via alias");
+        assert_eq!(
+            model.provider, "volcengine",
+            "model resolved by 'doubao' must have provider == 'volcengine'"
+        );
     }
 }

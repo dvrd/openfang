@@ -367,7 +367,11 @@ pub async fn send_message(
     // (not as a separate session message which the LLM may not process).
     let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
     } else {
         None
     };
@@ -575,9 +579,7 @@ pub async fn get_agent_session(
                                         msg.get_mut("tools").and_then(|v| v.as_array_mut())
                                     {
                                         if let Some(tool_obj) = tools_arr.get_mut(tool_idx) {
-                                            let preview: String =
-                                                result.chars().take(2000).collect();
-                                            tool_obj["result"] = serde_json::Value::String(preview);
+                                            tool_obj["result"] = serde_json::Value::String(result.clone());
                                             tool_obj["is_error"] =
                                                 serde_json::Value::Bool(*is_error);
                                         }
@@ -3129,7 +3131,7 @@ pub async fn list_templates() -> impl IntoResponse {
                     let manifest_content = std::fs::read_to_string(&manifest_path).ok();
                     let description = manifest_content
                         .as_ref()
-                        .and_then(|content| toml::from_str::<AgentManifest>(&content).ok())
+                        .and_then(|content| toml::from_str::<AgentManifest>(content).ok())
                         .map(|m| m.description)
                         .unwrap_or_default();
 
@@ -3572,6 +3574,15 @@ pub async fn uninstall_skill(
     }
 }
 
+/// POST /api/skills/reload — Hot-reload the skill registry from disk.
+///
+/// Called by the CLI after `openfang skill install` to notify the running
+/// daemon that new skill files were added to the skills directory (#752).
+pub async fn reload_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.kernel.reload_skills();
+    Json(serde_json::json!({"status": "reloaded"}))
+}
+
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
     Query(params): Query<HashMap<String, String>>,
@@ -3890,6 +3901,9 @@ pub async fn clawhub_install(
 
     match client.install(&req.slug, &skills_dir).await {
         Ok(result) => {
+            // Hot-reload so agents see the new skill immediately (#752)
+            state.kernel.reload_skills();
+
             let warnings: Vec<serde_json::Value> = result
                 .warnings
                 .iter()
@@ -4868,6 +4882,12 @@ pub async fn list_mcp_servers(State(state): State<Arc<AppState>>) -> impl IntoRe
                 openfang_types::config::McpTransportEntry::Sse { url } => {
                     serde_json::json!({
                         "type": "sse",
+                        "url": url,
+                    })
+                }
+                openfang_types::config::McpTransportEntry::Http { url } => {
+                    serde_json::json!({
+                        "type": "http",
                         "url": url,
                     })
                 }

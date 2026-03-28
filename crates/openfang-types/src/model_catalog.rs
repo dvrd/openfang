@@ -47,8 +47,19 @@ pub const ZAI_CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.ai/v1";
 pub const KIMI_CODING_BASE_URL: &str = "https://api.kimi.com/coding";
 pub const QIANFAN_BASE_URL: &str = "https://qianfan.baidubce.com/v2";
+// Hardcoded to cn-beijing region. Operators in other regions can override via
+// `base_url` in the provider config (e.g. `[provider_urls] volcengine = "https://ark.<region>.volces.com/api/v3"`).
 pub const VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
+// Alibaba Cloud Coding Plan International — subscription-based
+// See: https://www.alibabacloud.com/help/en/model-studio/coding-plan
+pub const ALIBABA_CODING_PLAN_BASE_URL: &str = "https://coding-intl.dashscope.aliyuncs.com/v1";
+/// Canonical provider ID for Volcano Engine (standard Ark /api/v3 endpoint).
+pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
+/// Canonical provider ID for Volcano Engine Coding Plan (Ark /api/coding/v3 endpoint).
+pub const VOLCENGINE_CODING_PROVIDER_ID: &str = "volcengine_coding";
+/// Provider alias for Doubao — routes to the Volcano Engine standard Ark endpoint.
+pub const DOUBAO_PROVIDER_ID: &str = "doubao";
 
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";

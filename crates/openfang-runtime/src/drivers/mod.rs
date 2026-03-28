@@ -2,7 +2,8 @@
 //!
 //! Contains drivers for Anthropic Claude, Google Gemini, OpenAI-compatible APIs, and more.
 //! Supports: Anthropic, Gemini, OpenAI, Groq, OpenRouter, DeepSeek, Together,
-//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, and any OpenAI-compatible endpoint.
+//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, volcengine (Doubao / Ark),
+//! and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
 pub mod claude_code;
@@ -15,14 +16,15 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, ALIBABA_CODING_PLAN_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL,
+    CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL,
+    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -197,6 +199,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "QIANFAN_API_KEY",
             key_required: true,
         }),
+        // "doubao" is also a model alias in builtin_aliases; here it acts as a provider alias
         "volcengine" | "doubao" => Some(ProviderDefaults {
             base_url: VOLCENGINE_BASE_URL,
             api_key_env: "VOLCENGINE_API_KEY",
@@ -260,6 +263,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `xai` — xAI (Grok)
 /// - `replicate` — Replicate
 /// - `chutes` — Chutes.ai (serverless open-source model inference)
+/// - `volcengine` — Volcano Engine (Doubao/Ark)
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
 pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
@@ -426,6 +430,29 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(anthropic::AnthropicDriver::new(api_key, base_url)));
     }
 
+    // Alibaba Coding Plan — OpenAI-compatible endpoint.
+    // Accept both underscore form ("alibaba_coding_plan") and hyphen form ("alibaba-coding-plan").
+    // NOTE: prefix stripping ("alibaba-coding-plan/") is handled upstream by
+    // `strip_provider_prefix` in agent_loop.rs before the CompletionRequest is built.
+    // By the time the request reaches this driver, `request.model` is already the bare
+    // model name (e.g. "qwen3.5-plus"). No wrapper needed here.
+    if provider == "alibaba_coding_plan" || provider == "alibaba-coding-plan" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("ALIBABA_CODING_PLAN_API_KEY").ok())
+            .ok_or_else(|| {
+                LlmError::MissingApiKey(
+                    "Set ALIBABA_CODING_PLAN_API_KEY environment variable".to_string(),
+                )
+            })?;
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| ALIBABA_CODING_PLAN_BASE_URL.to_string());
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+    }
+
     // All other providers use OpenAI-compatible format
     if let Some(defaults) = provider_defaults(provider) {
         let api_key = config
@@ -489,7 +516,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, nvidia, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, nvidia, codex, claude-code, qwen-code, kimi_coding, zhipu_coding, \
+             zai, zai_coding, qianfan, moonshot, lemonade, \
+             alibaba_coding_plan (or alibaba-coding-plan), \
+             volcengine (or doubao), volcengine_coding. \
+             Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -507,6 +538,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
+        ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",
@@ -530,6 +562,11 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
             "PERPLEXITY_API_KEY",
         ),
         ("cohere", "command-r-plus", "COHERE_API_KEY"),
+        (
+            "alibaba_coding_plan",
+            "alibaba-coding-plan/qwen3.5-plus",
+            "ALIBABA_CODING_PLAN_API_KEY",
+        ),
     ];
     for &(provider, model, env_var) in PROBE_ORDER {
         if std::env::var(env_var)
@@ -584,6 +621,8 @@ pub fn known_providers() -> &'static [&'static str] {
         "kimi_coding",
         "qianfan",
         "volcengine",
+        "volcengine_coding",
+        "doubao",
         "chutes",
         "venice",
         "nvidia",
@@ -591,6 +630,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "claude-code",
         "qwen-code",
         "azure",
+        "alibaba_coding_plan",
     ]
 }
 
@@ -689,13 +729,17 @@ mod tests {
         assert!(providers.contains(&"kimi_coding"));
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
+        assert!(providers.contains(&"volcengine_coding"));
+        assert!(providers.contains(&"doubao"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 37);
+        // Alibaba Coding Plan
+        assert!(providers.contains(&"alibaba_coding_plan"));
+        assert_eq!(providers.len(), 40);
     }
 
     #[test]
@@ -766,6 +810,93 @@ mod tests {
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_driver_with_direct_key() {
+        // Test that a directly-supplied API key is accepted.
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: Some("sk-sp-test-direct-key-67890".to_string()),
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "Alibaba Coding Plan with direct API key should succeed"
+        );
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_no_key_errors() {
+        // Alibaba Coding Plan with no API key should return MissingApiKey.
+        // We supply api_key: None and a unique base_url so the alibaba_coding_plan
+        // branch is entered deterministically without reading or modifying any env var.
+        // This is safe to run in parallel with other tests.
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: None,
+            base_url: Some("https://test-alibaba-no-key.invalid".to_string()),
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_err(), "Expected error when api_key is None");
+        let err = driver.err().unwrap().to_string();
+        assert!(
+            err.contains("ALIBABA_CODING_PLAN_API_KEY"),
+            "Error should mention ALIBABA_CODING_PLAN_API_KEY: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_custom_base_url() {
+        // Test custom base URL override
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: Some("sk-sp-test-key".to_string()),
+            base_url: Some("https://custom-endpoint.example.com/v1".to_string()),
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_doubao_alias_driver_with_direct_key() {
+        // "doubao" is a provider alias for volcengine — create_driver should route it correctly.
+        let config = DriverConfig {
+            provider: "doubao".to_string(),
+            api_key: Some("sk-test-doubao-direct-key-12345".to_string()),
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "doubao provider alias with direct API key should succeed: {:?}",
+            driver.err()
+        );
+    }
+
+    #[test]
+    fn test_doubao_alias_driver_no_key_errors() {
+        // "doubao" with no key and a unique base_url should return MissingApiKey.
+        let config = DriverConfig {
+            provider: "doubao".to_string(),
+            api_key: None,
+            base_url: Some("https://test-doubao-no-key.invalid".to_string()),
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_err(), "Expected error when doubao api_key is None");
+        let err = driver.err().unwrap().to_string();
+        assert!(
+            err.contains("VOLCENGINE_API_KEY"),
+            "Error should mention VOLCENGINE_API_KEY: {}",
+            err
+        );
     }
 
     #[test]
@@ -887,5 +1018,32 @@ mod tests {
             driver.is_ok(),
             "azure-openai alias should create driver successfully"
         );
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine() {
+        let d = provider_defaults("volcengine").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_doubao_alias() {
+        let d = provider_defaults("doubao").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_coding() {
+        let d = provider_defaults("volcengine_coding").unwrap();
+        assert_eq!(
+            d.base_url,
+            "https://ark.cn-beijing.volces.com/api/coding/v3"
+        );
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
     }
 }

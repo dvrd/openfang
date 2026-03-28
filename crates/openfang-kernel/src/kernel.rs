@@ -1835,7 +1835,10 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![],
                 skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
-                skill_prompt_context: Self::collect_prompt_context_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2040,12 +2043,22 @@ impl OpenFangKernel {
 
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
+                    // Reconstruct canonical catalog ID (e.g. "alibaba-coding-plan/qwen3.5-plus")
+                    // when the provider prefix was stripped before the agent ran, so that
+                    // catalog.pricing() finds the correct $0 subscription entry.
+                    let catalog_model_id = {
+                        let cat = kernel_clone
+                            .model_catalog
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner());
+                        Self::resolve_catalog_model_id(&manifest.model.provider, model, &cat)
+                    };
                     let cost = MeteringEngine::estimate_cost_with_catalog(
                         &kernel_clone
                             .model_catalog
                             .read()
                             .unwrap_or_else(|e| e.into_inner()),
-                        model,
+                        &catalog_model_id,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
@@ -2393,7 +2406,10 @@ impl OpenFangKernel {
                 granted_tools: tools.iter().map(|t| t.name.clone()).collect(),
                 recalled_memories: vec![], // Recalled in agent_loop, not here
                 skill_summary: Self::build_skill_summary_from(&skill_snapshot, &manifest.skills),
-                skill_prompt_context: Self::collect_prompt_context_from(&skill_snapshot, &manifest.skills),
+                skill_prompt_context: Self::collect_prompt_context_from(
+                    &skill_snapshot,
+                    &manifest.skills,
+                ),
                 mcp_summary: if mcp_tool_count > 0 {
                     self.build_mcp_summary(&manifest.mcp_servers)
                 } else {
@@ -2594,9 +2610,16 @@ impl OpenFangKernel {
 
         // Record usage in the metering engine (uses catalog pricing as single source of truth)
         let model = &manifest.model.model;
+        // The model field may have had its provider prefix stripped (e.g. "qwen3.5-plus" instead
+        // of "alibaba-coding-plan/qwen3.5-plus"). Reconstruct the canonical catalog ID so that
+        // catalog.pricing() can find the entry and return the correct $0 subscription rate.
+        let catalog_model_id = {
+            let cat = self.model_catalog.read().unwrap_or_else(|e| e.into_inner());
+            Self::resolve_catalog_model_id(&manifest.model.provider, model, &cat)
+        };
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
-            model,
+            &catalog_model_id,
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
@@ -2626,6 +2649,31 @@ impl OpenFangKernel {
         }
 
         Ok(result)
+    }
+
+    /// Reconstructs the canonical catalog model ID for any provider that stores models
+    /// with a `provider/model` prefix format (alibaba-coding-plan, codex, copilot,
+    /// qwen-code, etc.). Used before metering to ensure catalog lookup succeeds.
+    ///
+    /// When a provider prefix was stripped before the agent ran (e.g. "qwen3.5-plus"
+    /// instead of "alibaba-coding-plan/qwen3.5-plus"), this helper rebuilds the
+    /// prefixed form so that `catalog.pricing()` can find the correct entry.
+    /// If the model already contains '/' it is returned as-is.
+    fn resolve_catalog_model_id(
+        provider: &str,
+        model: &str,
+        cat: &openfang_runtime::model_catalog::ModelCatalog,
+    ) -> String {
+        if model.contains('/') {
+            return model.to_owned();
+        }
+        let provider_hyphen = provider.replace('_', "-");
+        let prefixed = format!("{}/{}", provider_hyphen, model);
+        if cat.pricing(&prefixed).is_some() {
+            prefixed
+        } else {
+            model.to_owned()
+        }
     }
 
     /// Resolve a module path relative to the kernel's home directory.
@@ -2887,7 +2935,16 @@ impl OpenFangKernel {
             .model_catalog
             .read()
             .ok()
-            .and_then(|catalog| catalog.find_model(model).cloned());
+            .and_then(|catalog| {
+                // When the caller specifies a provider, use provider-aware lookup
+                // so we resolve the model on the correct provider — not a builtin
+                // from a different provider that happens to share the same name (#833).
+                if let Some(ep) = explicit_provider {
+                    catalog.find_model_for_provider(model, ep).cloned()
+                } else {
+                    catalog.find_model(model).cloned()
+                }
+            });
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -3079,9 +3136,13 @@ impl OpenFangKernel {
             .unwrap_or((0, 0));
 
         let model = &entry.manifest.model.model;
+        let catalog_model_id = {
+            let cat = self.model_catalog.read().unwrap_or_else(|e| e.into_inner());
+            Self::resolve_catalog_model_id(&entry.manifest.model.provider, model, &cat)
+        };
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
-            model,
+            &catalog_model_id,
             input_tokens,
             output_tokens,
         );
@@ -4703,6 +4764,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             // Resolve env vars from vault/dotenv before passing to MCP subprocess.
@@ -4721,6 +4783,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             match McpConnection::connect(mcp_config).await {
@@ -4822,6 +4885,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             let mcp_config = McpServerConfig {
@@ -4829,6 +4893,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             self.extension_health.register(&server_config.name);
@@ -4940,6 +5005,7 @@ impl OpenFangKernel {
                 args: args.clone(),
             },
             McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+            McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
         };
 
         let mcp_config = McpServerConfig {
@@ -4947,6 +5013,7 @@ impl OpenFangKernel {
             transport,
             timeout_secs: server_config.timeout_secs,
             env: server_config.env.clone(),
+            headers: server_config.headers.clone(),
         };
 
         match McpConnection::connect(mcp_config).await {
@@ -5032,7 +5099,16 @@ impl OpenFangKernel {
         agent_id: AgentId,
         skill_snapshot: Option<&openfang_skills::registry::SkillRegistry>,
     ) -> Vec<ToolDefinition> {
-        let all_builtins = builtin_tool_definitions();
+        let all_builtins = if self.config.browser.enabled {
+            builtin_tool_definitions()
+        } else {
+            // When built-in browser is disabled (replaced by an external
+            // browser MCP server such as CamoFox), filter out browser_* tools.
+            builtin_tool_definitions()
+                .into_iter()
+                .filter(|t| !t.name.starts_with("browser_"))
+                .collect()
+        };
 
         // Look up agent entry for profile, skill/MCP allowlists, and declared tools
         let entry = self.registry.get(agent_id);
@@ -5165,10 +5241,18 @@ impl OpenFangKernel {
             .unwrap_or_default();
 
         if !tool_allowlist.is_empty() {
-            all_tools.retain(|t| tool_allowlist.iter().any(|a| a.to_lowercase() == t.name.to_lowercase()));
+            all_tools.retain(|t| {
+                tool_allowlist
+                    .iter()
+                    .any(|a| a.to_lowercase() == t.name.to_lowercase())
+            });
         }
         if !tool_blocklist.is_empty() {
-            all_tools.retain(|t| !tool_blocklist.iter().any(|b| b.to_lowercase() == t.name.to_lowercase()));
+            all_tools.retain(|t| {
+                !tool_blocklist
+                    .iter()
+                    .any(|b| b.to_lowercase() == t.name.to_lowercase())
+            });
         }
 
         // Step 5: Remove shell_exec if exec_policy denies it.
@@ -6805,5 +6889,48 @@ mod tests {
         );
 
         kernel.shutdown();
+    }
+
+    /// `resolve_catalog_model_id` must work for any provider that stores models with a
+    /// `provider/model` prefix, not just alibaba-coding-plan.
+    #[test]
+    fn test_resolve_catalog_model_id_multi_provider() {
+        use openfang_runtime::model_catalog::ModelCatalog;
+
+        let cat = ModelCatalog::new();
+
+        // Case 1: alibaba-coding-plan — model exists in catalog after prefix rebuild.
+        let result = OpenFangKernel::resolve_catalog_model_id(
+            "alibaba_coding_plan",
+            "qwen3.5-plus",
+            &cat,
+        );
+        assert_eq!(
+            result, "alibaba-coding-plan/qwen3.5-plus",
+            "should rebuild prefixed form when catalog entry exists"
+        );
+
+        // Case 2: model already contains '/' — returned unchanged regardless of provider.
+        let already_prefixed = OpenFangKernel::resolve_catalog_model_id(
+            "alibaba_coding_plan",
+            "alibaba-coding-plan/qwen3.5-plus",
+            &cat,
+        );
+        assert_eq!(
+            already_prefixed, "alibaba-coding-plan/qwen3.5-plus",
+            "already-prefixed model should pass through unchanged"
+        );
+
+        // Case 3: unknown provider (e.g. qwen_code) with no catalog entry — falls back
+        // to the bare model name so callers can still proceed.
+        let fallback = OpenFangKernel::resolve_catalog_model_id(
+            "qwen_code",
+            "some-unknown-model",
+            &cat,
+        );
+        assert_eq!(
+            fallback, "some-unknown-model",
+            "when prefixed form is not in catalog, bare model name should be returned"
+        );
     }
 }
