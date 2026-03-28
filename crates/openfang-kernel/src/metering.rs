@@ -374,6 +374,14 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
     if model.contains("llama") || model.contains("mixtral") {
         return (0.05, 0.10);
     }
+    // ── Alibaba Coding Plan (subscription-based: $50/month) ─────
+    // Must come BEFORE the qwen/glm/kimi/minimax checks below
+    // because model IDs like "alibaba-coding-plan/qwen3.5-plus" contain "qwen".
+    // All models in the Coding Plan use flat-rate subscription pricing.
+    // Per-token costs are $0 — actual cost is the fixed monthly fee.
+    if model.contains("alibaba-coding-plan") {
+        return (0.0, 0.0);
+    }
     // ── Qwen (Alibaba) ──────────────────────────────────────────
     if model.contains("qwen-max") {
         return (4.00, 12.00);
@@ -387,6 +395,9 @@ fn estimate_cost_rates(model: &str) -> (f64, f64) {
     if model.contains("qwen-turbo") {
         return (0.30, 0.60);
     }
+    // ── Qwen (generic / pay-per-token) ──────────────────────────
+    // Note: "alibaba-coding-plan/*" models are caught by the earlier guard above
+    // and never reach this branch.
     if model.contains("qwen") {
         return (0.20, 0.60);
     }
@@ -749,6 +760,70 @@ mod tests {
     fn test_estimate_cost_cerebras() {
         let cost = MeteringEngine::estimate_cost("cerebras/llama3.3-70b", 1_000_000, 1_000_000);
         assert!((cost - 0.12).abs() < 0.01); // $0.06 + $0.06
+    }
+
+    #[test]
+    fn test_estimate_cost_alibaba_coding_plan_subscription() {
+        // Alibaba Coding Plan is subscription-based ($50/month) — per-token cost is $0
+        let qwen35_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/qwen3.5-plus",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((qwen35_cost).abs() < 0.001, "Qwen 3.5 Plus should be $0 (subscription)");
+
+        let glm5_cost =
+            MeteringEngine::estimate_cost("alibaba-coding-plan/glm-5", 1_000_000, 1_000_000);
+        assert!((glm5_cost).abs() < 0.001, "GLM-5 should be $0 (subscription)");
+
+        let kimi_cost =
+            MeteringEngine::estimate_cost("alibaba-coding-plan/kimi-k2.5", 1_000_000, 1_000_000);
+        assert!((kimi_cost).abs() < 0.001, "Kimi K2.5 should be $0 (subscription)");
+
+        let minimax_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/minimax-m2.5",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((minimax_cost).abs() < 0.001, "MiniMax M2.5 should be $0 (subscription)");
+
+        let glm47_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/glm-4.7",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((glm47_cost).abs() < 0.001, "GLM-4.7 should be $0 (subscription)");
+
+        let qwen3_max_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/qwen3-max-2026-01-23",
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (qwen3_max_cost).abs() < 0.001,
+            "Qwen3-max-2026-01-23 should be $0 (subscription)"
+        );
+
+        let qwen3_coder_plus_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/qwen3-coder-plus",
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (qwen3_coder_plus_cost).abs() < 0.001,
+            "Qwen3-coder-plus should be $0 (subscription)"
+        );
+
+        let qwen3_coder_next_cost = MeteringEngine::estimate_cost(
+            "alibaba-coding-plan/qwen3-coder-next",
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (qwen3_coder_next_cost).abs() < 0.001,
+            "Qwen3-coder-next should be $0 (subscription)"
+        );
+
     }
 
     #[test]

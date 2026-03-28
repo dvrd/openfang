@@ -107,8 +107,9 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
 /// but the upstream API expects just `org/model` (e.g. `google/gemini-2.5-flash`).
 pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
-    let slash_prefix = format!("{}/", provider);
-    let colon_prefix = format!("{}:", provider);
+    let provider_normalized = provider.replace('_', "-");
+    let slash_prefix = format!("{}/", provider_normalized);
+    let colon_prefix = format!("{}:", provider_normalized);
     if model.starts_with(&slash_prefix) {
         model[slash_prefix.len()..].to_string()
     } else if model.starts_with(&colon_prefix) {
@@ -2952,6 +2953,30 @@ mod tests {
     use async_trait::async_trait;
     use openfang_types::tool::ToolCall;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn test_strip_provider_prefix_alibaba() {
+        // alibaba: underscore provider normalizes to hyphen prefix
+        assert_eq!(
+            strip_provider_prefix("alibaba-coding-plan/qwen3.5-plus", "alibaba_coding_plan"),
+            "qwen3.5-plus"
+        );
+        // no prefix passthrough
+        assert_eq!(
+            strip_provider_prefix("qwen3.5-plus", "alibaba_coding_plan"),
+            "qwen3.5-plus"
+        );
+        // regression: kimi_coding model passes through unchanged
+        assert_eq!(
+            strip_provider_prefix("kimi-for-coding", "kimi_coding"),
+            "kimi-for-coding"
+        );
+        // regression: zhipu_coding model passes through unchanged
+        assert_eq!(
+            strip_provider_prefix("codegeex-4", "zhipu_coding"),
+            "codegeex-4"
+        );
+    }
 
     #[test]
     fn test_max_iterations_constant() {
