@@ -80,7 +80,7 @@ impl RevoltAdapter {
             api_url,
             ws_url,
             allowed_channels: Vec::new(),
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),

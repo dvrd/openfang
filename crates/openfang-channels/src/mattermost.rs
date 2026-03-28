@@ -55,7 +55,7 @@ impl MattermostAdapter {
             server_url: server_url.trim_end_matches('/').to_string(),
             token: Zeroizing::new(token),
             allowed_channels,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),

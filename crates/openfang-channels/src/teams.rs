@@ -70,7 +70,7 @@ impl TeamsAdapter {
             app_password: Zeroizing::new(app_password),
             webhook_port,
             allowed_tenants,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             cached_token: Arc::new(RwLock::new(None)),

@@ -53,3 +53,16 @@ pub mod mqtt;
 pub mod ntfy;
 pub mod webhook;
 pub mod wecom;
+
+/// Build a channel HTTP client with redirects disabled.
+///
+/// SECURITY: Prevents SSRF via redirect — if an admin-configured webhook URL
+/// returns a 302 to an internal host (e.g., cloud IMDS), the redirect is not
+/// followed. All channel adapters should use this instead of `reqwest::Client::new()`.
+pub fn channel_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build channel HTTP client")
+}

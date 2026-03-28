@@ -64,7 +64,7 @@ impl DiscourseAdapter {
             api_key: Zeroizing::new(api_key),
             api_username,
             categories,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_post_id: Arc::new(RwLock::new(0)),

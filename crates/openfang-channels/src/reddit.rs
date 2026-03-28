@@ -88,7 +88,7 @@ impl RedditAdapter {
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(30))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .unwrap_or_else(|_| crate::channel_http_client());
 
         Self {
             client_id,

@@ -72,7 +72,7 @@ impl ViberAdapter {
             webhook_port,
             sender_name: DEFAULT_SENDER_NAME.to_string(),
             sender_avatar: None,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }

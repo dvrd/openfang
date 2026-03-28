@@ -62,7 +62,7 @@ impl KeybaseAdapter {
             username,
             paperkey: Zeroizing::new(paperkey),
             allowed_teams,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_msg_ids: Arc::new(RwLock::new(HashMap::new())),

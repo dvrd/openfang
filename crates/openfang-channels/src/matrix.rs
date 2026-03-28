@@ -53,7 +53,7 @@ impl MatrixAdapter {
             homeserver_url,
             user_id,
             access_token: Zeroizing::new(access_token),
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             allowed_rooms,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,

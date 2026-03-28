@@ -70,7 +70,7 @@ impl TelegramAdapter {
             .to_string();
         Self {
             token: Zeroizing::new(token),
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             allowed_users,
             poll_interval,
             api_base_url,
@@ -1052,7 +1052,7 @@ mod tests {
     use super::*;
 
     fn test_client() -> reqwest::Client {
-        reqwest::Client::new()
+        crate::channel_http_client()
     }
 
     #[tokio::test]

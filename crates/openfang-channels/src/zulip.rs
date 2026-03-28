@@ -61,7 +61,7 @@ impl ZulipAdapter {
             bot_email,
             api_key: Zeroizing::new(api_key),
             streams,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             queue_id: Arc::new(RwLock::new(None)),

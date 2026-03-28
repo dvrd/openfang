@@ -219,7 +219,7 @@ impl WeComAdapter {
             encoding_aes_key: None,
             token: None,
             webhook_port,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             cached_token: Arc::new(RwLock::new(None)),

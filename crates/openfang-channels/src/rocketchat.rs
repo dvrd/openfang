@@ -61,7 +61,7 @@ impl RocketChatAdapter {
             token: Zeroizing::new(token),
             user_id,
             allowed_channels,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             last_timestamps: Arc::new(RwLock::new(HashMap::new())),

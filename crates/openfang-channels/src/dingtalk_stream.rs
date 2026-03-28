@@ -47,7 +47,7 @@ impl DingTalkStreamAdapter {
             app_key,
             app_secret,
             robot_code,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             token_cache: Arc::new(Mutex::new(TokenCache::default())),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,

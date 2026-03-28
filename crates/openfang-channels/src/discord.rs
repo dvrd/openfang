@@ -63,7 +63,7 @@ impl DiscordAdapter {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             token: Zeroizing::new(token),
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             allowed_guilds,
             allowed_users,
             ignore_bots,

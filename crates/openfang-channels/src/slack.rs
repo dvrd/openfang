@@ -56,7 +56,7 @@ impl SlackAdapter {
         Self {
             app_token: Zeroizing::new(app_token),
             bot_token: Zeroizing::new(bot_token),
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             allowed_channels,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,

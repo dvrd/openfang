@@ -83,7 +83,7 @@ impl BlueskyAdapter {
             identifier,
             app_password: Zeroizing::new(app_password),
             service_url,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             session: Arc::new(RwLock::new(None)),

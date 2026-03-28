@@ -49,7 +49,7 @@ impl GitterAdapter {
         Self {
             token: Zeroizing::new(token),
             room_id,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }

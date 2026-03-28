@@ -55,7 +55,7 @@ impl GuildedAdapter {
         Self {
             bot_token: Zeroizing::new(bot_token),
             server_ids,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }

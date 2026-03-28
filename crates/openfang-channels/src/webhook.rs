@@ -76,7 +76,7 @@ impl WebhookAdapter {
             secret: Zeroizing::new(secret),
             listen_port,
             callback_url,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }

@@ -65,7 +65,7 @@ impl LineAdapter {
             channel_secret: Zeroizing::new(channel_secret.trim().to_string()),
             access_token: Zeroizing::new(access_token.trim().to_string()),
             webhook_port,
-            client: reqwest::Client::new(),
+            client: crate::channel_http_client(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -399,7 +399,7 @@ impl ChannelAdapter for LineAdapter {
                                 channel_secret: secret.as_ref().clone(),
                                 access_token: Zeroizing::new(String::new()),
                                 webhook_port: 0,
-                                client: reqwest::Client::new(),
+                                client: crate::channel_http_client(),
                                 shutdown_tx: Arc::new(watch::channel(false).0),
                                 shutdown_rx: watch::channel(false).1,
                             };
