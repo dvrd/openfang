@@ -1031,7 +1031,7 @@ async fn call_with_retry(
                         let api_key = fb
                             .api_key_env
                             .as_deref()
-                            .and_then(|env_name| std::env::var(env_name).ok());
+                            .and_then(openfang_types::secret_store::get_secret_or_env);
                         let fb_config = DriverConfig {
                             provider: fb.provider.clone(),
                             api_key,
@@ -1214,7 +1214,7 @@ async fn stream_with_retry(
                         let api_key = fb
                             .api_key_env
                             .as_deref()
-                            .and_then(|env_name| std::env::var(env_name).ok());
+                            .and_then(openfang_types::secret_store::get_secret_or_env);
                         let fb_config = DriverConfig {
                             provider: fb.provider.clone(),
                             api_key,

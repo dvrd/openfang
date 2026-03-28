@@ -262,7 +262,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("ANTHROPIC_API_KEY"))
             .ok_or_else(|| {
                 LlmError::MissingApiKey("Set ANTHROPIC_API_KEY environment variable".to_string())
             })?;
@@ -278,8 +278,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .or_else(|| std::env::var("GOOGLE_API_KEY").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("GEMINI_API_KEY"))
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("GOOGLE_API_KEY"))
             .ok_or_else(|| {
                 LlmError::MissingApiKey(
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY environment variable".to_string(),
@@ -297,7 +297,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY"))
             .or_else(crate::model_catalog::read_codex_credential)
             .ok_or_else(|| {
                 LlmError::MissingApiKey("Set OPENAI_API_KEY or install Codex CLI".to_string())
@@ -334,7 +334,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let github_token = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("GITHUB_TOKEN"))
             .ok_or_else(|| {
                 LlmError::MissingApiKey(
                     "Set GITHUB_TOKEN environment variable for GitHub Copilot".to_string(),
@@ -355,7 +355,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("AZURE_OPENAI_API_KEY").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("AZURE_OPENAI_API_KEY"))
             .ok_or_else(|| {
                 LlmError::MissingApiKey(
                     "Set AZURE_OPENAI_API_KEY environment variable for Azure OpenAI".to_string(),
@@ -375,7 +375,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("KIMI_API_KEY").ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env("KIMI_API_KEY"))
             .ok_or_else(|| {
                 LlmError::MissingApiKey("Set KIMI_API_KEY environment variable".to_string())
             })?;
@@ -391,7 +391,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let api_key = config
             .api_key
             .clone()
-            .or_else(|| std::env::var(defaults.api_key_env).ok())
+            .or_else(|| openfang_types::secret_store::get_secret_or_env(defaults.api_key_env))
             .unwrap_or_default();
 
         if defaults.key_required && api_key.is_empty() {
@@ -416,7 +416,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     if let Some(ref base_url) = config.base_url {
         let api_key = config.api_key.clone().unwrap_or_else(|| {
             let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-            std::env::var(&env_var).unwrap_or_default()
+            openfang_types::secret_store::get_secret_or_env(&env_var).unwrap_or_default()
         });
         return Ok(Arc::new(openai::OpenAIDriver::new(
             api_key,
@@ -429,7 +429,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     // driver with a default base URL derived from common patterns.
     {
         let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-        if let Ok(api_key) = std::env::var(&env_var) {
+        if let Some(api_key) = openfang_types::secret_store::get_secret_or_env(&env_var) {
             if !api_key.is_empty() {
                 return Err(LlmError::Api {
                     status: 0,
@@ -492,8 +492,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("cohere", "command-r-plus", "COHERE_API_KEY"),
     ];
     for &(provider, model, env_var) in PROBE_ORDER {
-        if std::env::var(env_var)
-            .ok()
+        if openfang_types::secret_store::get_secret_or_env(env_var)
             .filter(|v| !v.is_empty())
             .is_some()
         {
@@ -501,8 +500,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         }
     }
     // Also check GOOGLE_API_KEY as alias for Gemini
-    if std::env::var("GOOGLE_API_KEY")
-        .ok()
+    if openfang_types::secret_store::get_secret_or_env("GOOGLE_API_KEY")
         .filter(|v| !v.is_empty())
         .is_some()
     {
