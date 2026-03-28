@@ -422,8 +422,7 @@ pub fn urldecode(s: &str) -> String {
 /// Resolve an API key from an environment variable name.
 /// Returns `Zeroizing<String>` that auto-wipes from memory on drop.
 fn resolve_api_key(env_var: &str) -> Option<Zeroizing<String>> {
-    std::env::var(env_var)
-        .ok()
+    openfang_types::secret_store::get_secret_or_env(env_var)
         .filter(|v| !v.is_empty())
         .map(Zeroizing::new)
 }

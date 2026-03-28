@@ -28,10 +28,10 @@ impl TtsEngine {
 
     /// Detect which TTS provider is available based on environment variables.
     fn detect_provider() -> Option<&'static str> {
-        if std::env::var("OPENAI_API_KEY").is_ok() {
+        if openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY").is_some() {
             return Some("openai");
         }
-        if std::env::var("ELEVENLABS_API_KEY").is_ok() {
+        if openfang_types::secret_store::get_secret_or_env("ELEVENLABS_API_KEY").is_some() {
             return Some("elevenlabs");
         }
         None
@@ -86,7 +86,8 @@ impl TtsEngine {
         voice_override: Option<&str>,
         format_override: Option<&str>,
     ) -> Result<TtsResult, String> {
-        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?;
+        let api_key = openfang_types::secret_store::get_secret_or_env("OPENAI_API_KEY")
+            .ok_or("OPENAI_API_KEY not set")?;
 
         // Apply per-request overrides or fall back to config defaults
         let voice = voice_override.unwrap_or(&self.config.openai.voice);
@@ -100,7 +101,10 @@ impl TtsEngine {
             "speed": self.config.openai.speed,
         });
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| format!("Failed to build TTS client: {e}"))?;
         let response = client
             .post("https://api.openai.com/v1/audio/speech")
             .header("Authorization", format!("Bearer {}", api_key))
@@ -157,8 +161,8 @@ impl TtsEngine {
         text: &str,
         voice_override: Option<&str>,
     ) -> Result<TtsResult, String> {
-        let api_key =
-            std::env::var("ELEVENLABS_API_KEY").map_err(|_| "ELEVENLABS_API_KEY not set")?;
+        let api_key = openfang_types::secret_store::get_secret_or_env("ELEVENLABS_API_KEY")
+            .ok_or("ELEVENLABS_API_KEY not set")?;
 
         let voice_id = voice_override.unwrap_or(&self.config.elevenlabs.voice_id);
         let url = format!("https://api.elevenlabs.io/v1/text-to-speech/{}", voice_id);
@@ -172,7 +176,11 @@ impl TtsEngine {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(self.config.timeout_secs))
+            .build()
+            .map_err(|e| format!("Failed to build ElevenLabs client: {e}"))?;
         let response = client
             .post(&url)
             .header("xi-api-key", &api_key)

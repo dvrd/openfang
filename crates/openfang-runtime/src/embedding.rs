@@ -184,7 +184,7 @@ pub fn create_embedding_driver(
     let api_key = if api_key_env.is_empty() {
         String::new()
     } else {
-        std::env::var(api_key_env).unwrap_or_default()
+        openfang_types::secret_store::get_secret_or_env(api_key_env).unwrap_or_default()
     };
 
     let base_url = custom_base_url

@@ -448,8 +448,8 @@ fn check_requirement(req: &HandRequirement) -> bool {
             false
         }
         RequirementType::EnvVar | RequirementType::ApiKey => {
-            // Check if env var is set and non-empty
-            std::env::var(&req.check_value)
+            // Check if env var is set and non-empty (includes runtime secret store)
+            openfang_types::secret_store::get_secret_or_env(&req.check_value)
                 .map(|v| !v.is_empty())
                 .unwrap_or(false)
         }
