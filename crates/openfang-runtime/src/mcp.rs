@@ -237,15 +237,16 @@ impl McpConnection {
             for arg in &args_vec {
                 cmd.arg(arg);
             }
-            // Sandbox: clear environment, only pass whitelisted vars
+            // Sandbox: clear environment, only pass whitelisted vars.
+            // Use get_secret_or_env so runtime-configured secrets are visible.
             cmd.env_clear();
             for var_name in &env_list {
-                if let Ok(val) = std::env::var(var_name) {
+                if let Some(val) = openfang_types::secret_store::get_secret_or_env(var_name) {
                     cmd.env(var_name, val);
                 }
             }
             // Always pass PATH for binary resolution
-            if let Ok(path) = std::env::var("PATH") {
+            if let Some(path) = openfang_types::secret_store::get_secret_or_env("PATH") {
                 cmd.env("PATH", path);
             }
             // On Windows, npm/node need extra vars
@@ -290,7 +291,7 @@ impl McpConnection {
         use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
         use rmcp::transport::StreamableHttpClientTransport;
 
-        Self::check_ssrf(url)?;
+        crate::ssrf::check_ssrf_async(url).await?;
 
         // Parse custom headers (e.g., "Authorization: Bearer <token>").
         let mut custom_headers: HashMap<HeaderName, HeaderValue> = HashMap::new();
@@ -323,14 +324,7 @@ impl McpConnection {
         Ok(client)
     }
 
-    /// Basic SSRF check: reject obviously private/metadata URLs.
-    fn check_ssrf(url: &str) -> Result<(), String> {
-        let lower = url.to_lowercase();
-        if lower.contains("169.254.169.254") || lower.contains("metadata.google") {
-            return Err("SSRF: MCP URL targets metadata endpoint".to_string());
-        }
-        Ok(())
-    }
+    // SSRF protection: uses crate::ssrf::check_ssrf_async directly in connect_http.
 }
 
 // ---------------------------------------------------------------------------
