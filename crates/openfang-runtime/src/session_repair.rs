@@ -626,13 +626,13 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
             let is_no_reply = match &messages[i].content {
                 MessageContent::Text(text) => {
                     let t = text.trim();
-                    t == "NO_REPLY" || t == "[no reply needed]"
+                    t == "NO_REPLY" || t == "(no reply needed)"
                 }
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
                         && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
                             let t = text.trim();
-                            t == "NO_REPLY" || t == "[no reply needed]"
+                            t == "NO_REPLY" || t == "(no reply needed)"
                         })
                 }
             };
@@ -1189,7 +1189,7 @@ mod tests {
             Message::user("ping"),
             Message::assistant("NO_REPLY"),
             Message::user("ping2"),
-            Message::assistant("[no reply needed]"),
+            Message::assistant("(no reply needed)"),
             Message::user("Hello"),
             Message::assistant("Hi there!"),
         ];
