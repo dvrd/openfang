@@ -783,7 +783,9 @@ mod tests {
 
     #[test]
     fn env_var_requirement_check() {
-        std::env::set_var("OPENFANG_TEST_HAND_REQ", "test_value");
+        // Use the thread-safe secret store instead of std::env::set_var,
+        // which is UB in multi-threaded Rust since 1.82.
+        openfang_types::secret_store::set_secret("OPENFANG_TEST_HAND_REQ", "test_value");
         let req = HandRequirement {
             key: "test".to_string(),
             label: "test".to_string(),
@@ -805,7 +807,7 @@ mod tests {
             install: None,
         };
         assert!(!check_requirement(&req_missing));
-        std::env::remove_var("OPENFANG_TEST_HAND_REQ");
+        openfang_types::secret_store::remove_secret("OPENFANG_TEST_HAND_REQ");
     }
 
     #[test]
