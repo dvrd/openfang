@@ -386,6 +386,10 @@ pub struct ModelConfig {
     pub api_key_env: Option<String>,
     /// Optional base URL override for the provider.
     pub base_url: Option<String>,
+    /// Maximum message history size before auto-trimming (default: 20).
+    /// Higher values give more context but use more tokens. Range: 5-200.
+    #[serde(default)]
+    pub max_history_messages: Option<u32>,
 }
 
 impl Default for ModelConfig {
@@ -398,6 +402,7 @@ impl Default for ModelConfig {
             system_prompt: "You are a helpful AI agent.".to_string(),
             api_key_env: None,
             base_url: None,
+            max_history_messages: None,
         }
     }
 }

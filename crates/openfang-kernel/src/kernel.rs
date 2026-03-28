@@ -3334,6 +3334,7 @@ impl OpenFangKernel {
                 system_prompt: def.agent.system_prompt.clone(),
                 api_key_env: def.agent.api_key_env.clone(),
                 base_url: def.agent.base_url.clone(),
+                max_history_messages: None,
             },
             capabilities: ManifestCapabilities {
                 tools: def.tools.clone(),

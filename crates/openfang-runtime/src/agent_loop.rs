@@ -339,8 +339,14 @@ pub async fn run_agent_loop(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    // Per-agent max_history_messages override (upstream #871). Clamped to [5, 200].
+    let max_history = manifest
+        .model
+        .max_history_messages
+        .map(|n| (n as usize).clamp(5, 200))
+        .unwrap_or(MAX_HISTORY_MESSAGES);
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
@@ -1541,8 +1547,14 @@ pub async fn run_agent_loop_streaming(
         .map(|s| s.to_string());
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    // Per-agent max_history_messages override (upstream #871). Clamped to [5, 200].
+    let max_history = manifest
+        .model
+        .max_history_messages
+        .map(|n| (n as usize).clamp(5, 200))
+        .unwrap_or(MAX_HISTORY_MESSAGES);
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
