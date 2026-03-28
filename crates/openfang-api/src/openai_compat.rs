@@ -235,7 +235,7 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                 OaiContent::Null => return None,
             };
 
-            Some(Message { role, content, server_id: Some(uuid::Uuid::new_v4().to_string()) })
+            Some(Message { role, content })
         })
         .collect()
 }

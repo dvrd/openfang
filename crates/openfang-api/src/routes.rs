@@ -322,7 +322,6 @@ pub fn inject_attachments_into_session(
     session.messages.push(Message {
         role: Role::User,
         content: MessageContent::Blocks(image_blocks),
-        server_id: Some(uuid::Uuid::new_v4().to_string()),
     });
 
     if let Err(e) = kernel.memory.save_session(&session) {

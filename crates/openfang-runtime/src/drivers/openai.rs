@@ -697,6 +697,43 @@ impl LlmDriver for OpenAIDriver {
                 }
             }
 
+            // FALLBACK: If no structured tool_calls were returned but tools were
+            // requested, scan the text for embedded tool calls. Many Ollama models
+            // (and some open-source models) don't use the structured tool_calls field
+            // — they embed tool calls as JSON or XML in the response text.
+            // (upstream #773, #857)
+            if tool_calls.is_empty() && !request.tools.is_empty() {
+                let response_text: String = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !response_text.is_empty() {
+                    let parsed = parse_text_tool_calls(&response_text, &request.tools);
+                    for (name, input) in parsed {
+                        let id = format!("text_{}", uuid::Uuid::new_v4().simple());
+                        content.push(ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                            provider_metadata: None,
+                        });
+                        tool_calls.push(ToolCall { id, name, input });
+                    }
+                    if !tool_calls.is_empty() {
+                        // Clear the text content — it was a tool call, not a text response
+                        content.retain(|b| !matches!(b, ContentBlock::Text { .. }));
+                        tracing::debug!(
+                            count = tool_calls.len(),
+                            "Parsed tool calls from response text (Ollama/open-source fallback)"
+                        );
+                    }
+                }
+            }
+
             let stop_reason = match choice.finish_reason.as_deref() {
                 Some("stop") => StopReason::EndTurn,
                 Some("tool_calls") => StopReason::ToolUse,
@@ -1565,6 +1602,88 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
     })
 }
 
+/// Parse tool calls embedded in response text (JSON or XML format).
+///
+/// Many Ollama models and open-source LLMs don't use the structured `tool_calls`
+/// response field. Instead they embed tool calls in the text as:
+///
+/// JSON: `{"name": "tool_name", "arguments": {...}}`
+///       or `{"name": "tool_name", "parameters": {...}}`
+/// XML:  `<tool_call><name>tool_name</name><arguments>{...}</arguments></tool_call>`
+///
+/// Only extracts calls whose name matches a tool in the request to avoid
+/// false positives on arbitrary JSON in the response.
+fn parse_text_tool_calls(
+    text: &str,
+    tools: &[openfang_types::tool::ToolDefinition],
+) -> Vec<(String, serde_json::Value)> {
+    let tool_names: std::collections::HashSet<&str> =
+        tools.iter().map(|t| t.name.as_str()).collect();
+    let mut results = Vec::new();
+
+    // Strategy 1: JSON tool calls — look for {"name": "...", "arguments": {...}}
+    // Find JSON objects that contain a "name" field matching a known tool.
+    for start in text.match_indices('{').map(|(i, _)| i) {
+        // Try to parse a JSON object starting at this position
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text[start..]) {
+            if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                if tool_names.contains(name) {
+                    let args = obj
+                        .get("arguments")
+                        .or_else(|| obj.get("parameters"))
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    // If args is a string, try parsing it as JSON
+                    let args = if let Some(s) = args.as_str() {
+                        serde_json::from_str(s).unwrap_or(serde_json::json!({}))
+                    } else {
+                        args
+                    };
+                    results.push((name.to_string(), args));
+                }
+            }
+        }
+    }
+
+    // Strategy 2: XML tool calls — <tool_call><name>X</name><arguments>{...}</arguments></tool_call>
+    if results.is_empty() {
+        let mut search_from = 0;
+        while let Some(tc_start) = text[search_from..].find("<tool_call>") {
+            let abs_start = search_from + tc_start;
+            if let Some(tc_end) = text[abs_start..].find("</tool_call>") {
+                let block = &text[abs_start..abs_start + tc_end + 12];
+                // Extract <name>...</name>
+                if let (Some(ns), Some(ne)) = (block.find("<name>"), block.find("</name>")) {
+                    let name = &block[ns + 6..ne];
+                    if tool_names.contains(name) {
+                        // Extract <arguments>...</arguments> or <parameters>...</parameters>
+                        let args_str = if let (Some(as_), Some(ae)) =
+                            (block.find("<arguments>"), block.find("</arguments>"))
+                        {
+                            Some(&block[as_ + 11..ae])
+                        } else if let (Some(ps), Some(pe)) =
+                            (block.find("<parameters>"), block.find("</parameters>"))
+                        {
+                            Some(&block[ps + 12..pe])
+                        } else {
+                            None
+                        };
+                        let args = args_str
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or(serde_json::json!({}));
+                        results.push((name.to_string(), args));
+                    }
+                }
+                search_from = abs_start + tc_end + 12;
+            } else {
+                break;
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1835,5 +1954,58 @@ mod tests {
         );
         let url = driver.chat_url("gpt-4o");
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+    }
+
+    fn make_tool(name: &str) -> openfang_types::tool::ToolDefinition {
+        openfang_types::tool::ToolDefinition {
+            name: name.to_string(),
+            description: "test".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn test_parse_text_tool_calls_json() {
+        let tools = vec![make_tool("web_fetch"), make_tool("file_read")];
+        let text = r#"I'll fetch that for you. {"name": "web_fetch", "arguments": {"url": "https://example.com"}}"#;
+        let result = parse_text_tool_calls(text, &tools);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "web_fetch");
+        assert_eq!(result[0].1["url"], "https://example.com");
+    }
+
+    #[test]
+    fn test_parse_text_tool_calls_json_parameters() {
+        let tools = vec![make_tool("shell_exec")];
+        let text = r#"{"name": "shell_exec", "parameters": {"command": "ls -la"}}"#;
+        let result = parse_text_tool_calls(text, &tools);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_parse_text_tool_calls_xml() {
+        let tools = vec![make_tool("file_read")];
+        let text = r#"<tool_call><name>file_read</name><arguments>{"path": "/tmp/test.txt"}</arguments></tool_call>"#;
+        let result = parse_text_tool_calls(text, &tools);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "file_read");
+        assert_eq!(result[0].1["path"], "/tmp/test.txt");
+    }
+
+    #[test]
+    fn test_parse_text_tool_calls_ignores_unknown_tools() {
+        let tools = vec![make_tool("web_fetch")];
+        let text = r#"{"name": "evil_tool", "arguments": {"cmd": "rm -rf /"}}"#;
+        let result = parse_text_tool_calls(text, &tools);
+        assert!(result.is_empty(), "Should not parse unknown tool names");
+    }
+
+    #[test]
+    fn test_parse_text_tool_calls_no_tool_calls() {
+        let tools = vec![make_tool("web_fetch")];
+        let text = "Sure, I can help you with that! What would you like me to do?";
+        let result = parse_text_tool_calls(text, &tools);
+        assert!(result.is_empty());
     }
 }
