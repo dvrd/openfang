@@ -696,11 +696,11 @@ pub async fn run_agent_loop(
                 // Add assistant message with tool use blocks
                 session.messages.push(Message {
                     role: Role::Assistant,
-                    content: MessageContent::Blocks(assistant_blocks.clone()),
+                    content: MessageContent::Blocks(assistant_blocks.clone()), server_id: None,
                 });
                 messages.push(Message {
                     role: Role::Assistant,
-                    content: MessageContent::Blocks(assistant_blocks),
+                    content: MessageContent::Blocks(assistant_blocks), server_id: None,
                 });
 
                 // Build allowed tool names list for capability enforcement
@@ -924,7 +924,7 @@ pub async fn run_agent_loop(
                 // Add tool results as a user message (Anthropic API requirement)
                 let tool_results_msg = Message {
                     role: Role::User,
-                    content: MessageContent::Blocks(tool_result_blocks.clone()),
+                    content: MessageContent::Blocks(tool_result_blocks.clone()), server_id: None,
                 };
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);
@@ -1900,11 +1900,11 @@ pub async fn run_agent_loop_streaming(
 
                 session.messages.push(Message {
                     role: Role::Assistant,
-                    content: MessageContent::Blocks(assistant_blocks.clone()),
+                    content: MessageContent::Blocks(assistant_blocks.clone()), server_id: None,
                 });
                 messages.push(Message {
                     role: Role::Assistant,
-                    content: MessageContent::Blocks(assistant_blocks),
+                    content: MessageContent::Blocks(assistant_blocks), server_id: None,
                 });
 
                 let allowed_tool_names: Vec<String> =
@@ -2139,7 +2139,7 @@ pub async fn run_agent_loop_streaming(
 
                 let tool_results_msg = Message {
                     role: Role::User,
-                    content: MessageContent::Blocks(tool_result_blocks.clone()),
+                    content: MessageContent::Blocks(tool_result_blocks.clone()), server_id: None,
                 };
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);

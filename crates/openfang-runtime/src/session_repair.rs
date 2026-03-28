@@ -110,6 +110,7 @@ pub fn validate_and_repair_with_stats(messages: &[Message]) -> (Vec<Message>, Re
         cleaned.push(Message {
             role: msg.role,
             content: new_content,
+            server_id: msg.server_id.clone(),
         });
     }
 
@@ -309,7 +310,7 @@ fn reorder_tool_results(messages: &mut Vec<Message>) -> usize {
                     insert_pos,
                     Message {
                         role: Role::User,
-                        content: MessageContent::Blocks(blocks),
+                        content: MessageContent::Blocks(blocks), server_id: None,
                     },
                 );
             }
@@ -400,7 +401,7 @@ fn insert_synthetic_results(messages: &mut Vec<Message>) -> usize {
                 insert_pos.min(messages.len()),
                 Message {
                     role: Role::User,
-                    content: MessageContent::Blocks(blocks),
+                    content: MessageContent::Blocks(blocks), server_id: None,
                 },
             );
         }
@@ -704,7 +705,7 @@ mod tests {
             Message::user("Hello"),
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "orphan-id".to_string(),
                     tool_name: String::new(),
                     content: "some result".to_string(),
@@ -743,7 +744,7 @@ mod tests {
             Message::user("Hello"),
             Message {
                 role: Role::User,
-                content: MessageContent::Text(String::new()),
+                content: MessageContent::Text(String::new()), server_id: None,
             },
             Message::assistant("Hi"),
         ];
@@ -757,7 +758,7 @@ mod tests {
             Message::user("Search for rust"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                     id: "tu-1".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
@@ -766,7 +767,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-1".to_string(),
                     tool_name: String::new(),
                     content: "Results found".to_string(),
@@ -789,7 +790,7 @@ mod tests {
             Message::user("Search for rust"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                     id: "tu-reorder".to_string(),
                     name: "web_search".to_string(),
                     input: serde_json::json!({"query": "rust"}),
@@ -799,7 +800,7 @@ mod tests {
             Message::user("While you search, I have another question"),
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-reorder".to_string(),
                     tool_name: String::new(),
                     content: "Search results".to_string(),
@@ -843,7 +844,7 @@ mod tests {
             Message::user("Do something"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                     id: "tu-orphan".to_string(),
                     name: "file_read".to_string(),
                     input: serde_json::json!({"path": "/etc/hosts"}),
@@ -881,7 +882,7 @@ mod tests {
             Message::user("Search"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                     id: "tu-dup".to_string(),
                     name: "search".to_string(),
                     input: serde_json::json!({}),
@@ -890,7 +891,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-dup".to_string(),
                     tool_name: String::new(),
                     content: "First result".to_string(),
@@ -899,7 +900,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-dup".to_string(),
                     tool_name: String::new(),
                     content: "Duplicate result".to_string(),
@@ -989,7 +990,7 @@ mod tests {
             Message::user("Hello"),
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "orphan".to_string(),
                     tool_name: String::new(),
                     content: "lost".to_string(),
@@ -999,7 +1000,7 @@ mod tests {
             Message::user("World"),
             Message {
                 role: Role::User,
-                content: MessageContent::Text(String::new()),
+                content: MessageContent::Text(String::new()), server_id: None,
             },
             Message::assistant("Hi"),
         ];
@@ -1018,7 +1019,7 @@ mod tests {
             Message::user("Do something"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::Text {
+                content: MessageContent::Blocks(vec![ContentBlock::Text {, server_id: None,
                     text: String::new(),
                     provider_metadata: None,
                 }]),
@@ -1054,7 +1055,7 @@ mod tests {
             // Assistant uses two tools
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![
+                content: MessageContent::Blocks(vec![, server_id: None,
                     ContentBlock::ToolUse {
                         id: "tu-a".to_string(),
                         name: "search".to_string(),
@@ -1072,7 +1073,7 @@ mod tests {
             // Only tu-a has a result, tu-b is missing
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-a".to_string(),
                     tool_name: String::new(),
                     content: "search result".to_string(),
@@ -1082,7 +1083,7 @@ mod tests {
             // Orphaned result from a non-existent tool use
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-ghost".to_string(),
                     tool_name: String::new(),
                     content: "ghost result".to_string(),
@@ -1092,7 +1093,7 @@ mod tests {
             // Empty message
             Message {
                 role: Role::User,
-                content: MessageContent::Text(String::new()),
+                content: MessageContent::Text(String::new()), server_id: None,
             },
             Message::assistant("Done"),
         ];
@@ -1130,7 +1131,7 @@ mod tests {
             Message::user("Hello"),
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![
+                content: MessageContent::Blocks(vec![, server_id: None,
                     ContentBlock::ToolResult {
                         tool_use_id: "orphan-1".to_string(),
                         tool_name: String::new(),

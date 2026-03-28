@@ -9,6 +9,11 @@ pub struct Message {
     pub role: Role,
     /// The content of the message.
     pub content: MessageContent,
+    /// Server-assigned unique ID for reliable deduplication and audit trail.
+    /// LLM-provided IDs (tool_use_id, etc.) are unreliable — they can collide,
+    /// be missing, or be duplicated across sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 /// The role of a message sender in an LLM conversation.
@@ -172,6 +177,7 @@ impl Message {
         Self {
             role: Role::System,
             content: MessageContent::Text(content.into()),
+            server_id: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 
@@ -180,6 +186,7 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Text(content.into()),
+            server_id: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 
@@ -188,6 +195,7 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Blocks(blocks),
+            server_id: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 
@@ -196,6 +204,7 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: MessageContent::Text(content.into()),
+            server_id: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 }

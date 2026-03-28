@@ -458,6 +458,7 @@ async fn summarize_messages(
                 text: summarize_prompt,
                 provider_metadata: None,
             }]),
+            server_id: None,
         }],
         tools: vec![],
         max_tokens: config.max_summary_tokens,
@@ -576,6 +577,7 @@ async fn summarize_in_chunks(
                 text: merge_prompt,
                 provider_metadata: None,
             }]),
+            server_id: None,
         }],
         tools: vec![],
         max_tokens: config.max_summary_tokens,
@@ -907,7 +909,7 @@ mod tests {
         // Insert a tool use + result pair early in the history
         messages[1] = Message {
             role: Role::Assistant,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                 id: "tu-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "test"}),
@@ -916,7 +918,7 @@ mod tests {
         };
         messages[2] = Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                 tool_use_id: "tu-1".to_string(),
                 tool_name: String::new(),
                 content: "Search results here".to_string(),
@@ -1240,7 +1242,7 @@ mod tests {
             Message::user("Hello"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![
+                content: MessageContent::Blocks(vec![, server_id: None,
                     ContentBlock::Text {
                         text: "Let me search".to_string(),
                         provider_metadata: None,
@@ -1255,7 +1257,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "tu-1".to_string(),
                     tool_name: String::new(),
                     content: "Results found".to_string(),
@@ -1264,7 +1266,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::Image {
+                content: MessageContent::Blocks(vec![ContentBlock::Image {, server_id: None,
                     media_type: "image/png".to_string(),
                     data: "base64data".to_string(),
                 }]),
@@ -1396,7 +1398,7 @@ mod tests {
         let tool_content = format!("result: {blob}");
         let messages = vec![Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                 tool_use_id: "t1".to_string(),
                 tool_name: String::new(),
                 content: tool_content,
@@ -1416,7 +1418,7 @@ mod tests {
         let large_result = "word ".repeat(500); // ~2500 chars of non-base64 text
         let messages = vec![Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                 tool_use_id: "t2".to_string(),
                 tool_name: String::new(),
                 content: large_result,
@@ -1440,7 +1442,7 @@ mod tests {
         let short_result = "Success: 42 records processed";
         let messages = vec![Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                 tool_use_id: "t3".to_string(),
                 tool_name: String::new(),
                 content: short_result.to_string(),
@@ -1459,7 +1461,7 @@ mod tests {
             Message::user("hello"),
             Message {
                 role: Role::Assistant,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {, server_id: None,
                     id: "t1".to_string(),
                     name: "read".to_string(),
                     input: serde_json::json!({}),
@@ -1468,7 +1470,7 @@ mod tests {
             },
             Message {
                 role: Role::User,
-                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {, server_id: None,
                     tool_use_id: "t1".to_string(),
                     tool_name: "read".to_string(),
                     content: "file contents".to_string(),
