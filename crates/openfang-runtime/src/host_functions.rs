@@ -261,7 +261,8 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
         match request.send().await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                match resp.text().await {
+                // SECURITY: Bounded read (10MB) to prevent OOM from chunked responses.
+                match crate::web_fetch::read_body_bounded(resp, 10 * 1024 * 1024).await {
                     Ok(text) => json!({"ok": {"status": status, "body": text}}),
                     Err(e) => json!({"error": format!("Failed to read response: {e}")}),
                 }

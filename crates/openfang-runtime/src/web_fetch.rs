@@ -12,6 +12,30 @@ use openfang_types::config::WebFetchConfig;
 use std::sync::Arc;
 use tracing::debug;
 
+/// Read a response body with a byte limit, regardless of Content-Length header.
+///
+/// Prevents OOM from chunked/streaming responses that omit Content-Length.
+/// Accumulates chunks until `max_bytes` is reached, then returns an error.
+pub async fn read_body_bounded(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, String> {
+    use futures::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(1024 * 1024)); // pre-alloc up to 1MB
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Failed to read response chunk: {e}"))?;
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(format!(
+                "Response body too large (>{} bytes, no Content-Length header)",
+                max_bytes
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| format!("Response body is not valid UTF-8: {e}"))
+}
+
 /// Enhanced web fetch engine with SSRF protection and readability extraction.
 pub struct WebFetchEngine {
     config: WebFetchConfig,
@@ -149,10 +173,9 @@ impl WebFetchEngine {
             .unwrap_or("")
             .to_string();
 
-        let resp_body = resp
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response body: {e}"))?;
+        // SECURITY: Use bounded read instead of resp.text() to prevent OOM
+        // from chunked responses that omit Content-Length.
+        let resp_body = read_body_bounded(resp, self.config.max_response_bytes).await?;
 
         // Step 4: For GET requests, detect HTML and convert to Markdown.
         // For non-GET (API calls), return raw body — don't mangle JSON/XML responses.
