@@ -87,10 +87,11 @@ fn phantom_action_detected(text: &str) -> bool {
 }
 
 /// Returns true when the agent response text indicates an intentional silent completion.
-/// Matches `NO_REPLY` (exact) and `[SILENT]` (case-insensitive).
+/// Matches `NO_REPLY` (case-insensitive) and `[SILENT]` (case-insensitive).
+/// Only whole-response tokens qualify — a token embedded in surrounding text is not silent.
 fn is_silent_token(text: &str) -> bool {
     let trimmed = text.trim();
-    trimmed == "NO_REPLY" || trimmed.eq_ignore_ascii_case("[silent]")
+    trimmed.eq_ignore_ascii_case("NO_REPLY") || trimmed.eq_ignore_ascii_case("[silent]")
 }
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
@@ -4688,5 +4689,16 @@ mod tests {
         assert!(!is_silent_token("Hello, how can I help?"));
         assert!(!is_silent_token("SILENT"));
         assert!(!is_silent_token(""));
+        // Embedded tokens must not trigger silent mode — only whole-response tokens qualify.
+        assert!(!is_silent_token("prefix [SILENT]"));
+        assert!(!is_silent_token("[SILENT] suffix"));
+        assert!(!is_silent_token("prefix NO_REPLY suffix"));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply_case_insensitive() {
+        assert!(is_silent_token("no_reply"));
+        assert!(is_silent_token("No_Reply"));
+        assert!(is_silent_token("  NO_REPLY  "));
     }
 }
