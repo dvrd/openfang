@@ -157,15 +157,19 @@ fn host_fs_read(state: &GuestState, params: &serde_json::Value) -> serde_json::V
         Some(p) => p,
         None => return json!({"error": "Missing 'path' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(path.to_string())) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check to prevent symlink escape.
+    // A symlink inside an allowed directory pointing outside it must be caught
+    // by the capability check against the resolved (canonical) path.
     let canonical = match safe_resolve_path(path) {
         Ok(c) => c,
         Err(e) => return e,
     };
+    if let Err(e) = check_capability(
+        &state.capabilities,
+        &Capability::FileRead(canonical.to_string_lossy().to_string()),
+    ) {
+        return e;
+    }
     match std::fs::read_to_string(&canonical) {
         Ok(content) => json!({"ok": content}),
         Err(e) => json!({"error": format!("fs_read failed: {e}")}),
@@ -181,18 +185,17 @@ fn host_fs_write(state: &GuestState, params: &serde_json::Value) -> serde_json::
         Some(c) => c,
         None => return json!({"error": "Missing 'content' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(
-        &state.capabilities,
-        &Capability::FileWrite(path.to_string()),
-    ) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check (same rationale as fs_read).
     let write_path = match safe_resolve_parent(path) {
         Ok(p) => p,
         Err(e) => return e,
     };
+    if let Err(e) = check_capability(
+        &state.capabilities,
+        &Capability::FileWrite(write_path.to_string_lossy().to_string()),
+    ) {
+        return e;
+    }
     match std::fs::write(&write_path, content) {
         Ok(()) => json!({"ok": true}),
         Err(e) => json!({"error": format!("fs_write failed: {e}")}),
@@ -204,15 +207,17 @@ fn host_fs_list(state: &GuestState, params: &serde_json::Value) -> serde_json::V
         Some(p) => p,
         None => return json!({"error": "Missing 'path' parameter"}),
     };
-    // Check capability with raw path first
-    if let Err(e) = check_capability(&state.capabilities, &Capability::FileRead(path.to_string())) {
-        return e;
-    }
-    // SECURITY: Reject path traversal after capability gate
+    // SECURITY: Canonicalize BEFORE capability check (same rationale as fs_read).
     let canonical = match safe_resolve_path(path) {
         Ok(c) => c,
         Err(e) => return e,
     };
+    if let Err(e) = check_capability(
+        &state.capabilities,
+        &Capability::FileRead(canonical.to_string_lossy().to_string()),
+    ) {
+        return e;
+    }
     match std::fs::read_dir(&canonical) {
         Ok(entries) => {
             let names: Vec<String> = entries
