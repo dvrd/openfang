@@ -6435,6 +6435,7 @@ pub async fn a2a_send_task(
             }],
         }],
         artifacts: vec![],
+        created_at: None, // set by store.insert()
     };
     state.kernel.a2a_task_store.insert(task);
 

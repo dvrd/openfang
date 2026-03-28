@@ -95,6 +95,10 @@ pub struct A2aTask {
     /// Artifacts produced by the task.
     #[serde(default)]
     pub artifacts: Vec<A2aArtifact>,
+    /// Creation timestamp for TTL-based garbage collection.
+    /// Set automatically by `A2aTaskStore::insert()`.
+    #[serde(skip, default)]
+    pub created_at: Option<std::time::SystemTime>,
 }
 
 /// A2A task status.
@@ -228,11 +232,33 @@ impl A2aTaskStore {
         }
     }
 
-    /// Insert a task. If the store is at capacity, the oldest task is evicted.
+    /// Insert a task. If the store is at capacity, evict the oldest task.
+    ///
+    /// Eviction priority: completed/failed/cancelled first, then oldest
+    /// in-progress task. This guarantees the store never exceeds `max_tasks`,
+    /// preventing memory exhaustion from public A2A endpoint flooding.
     pub fn insert(&self, task: A2aTask) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        // Evict oldest completed/failed/cancelled tasks if at capacity
-        if tasks.len() >= self.max_tasks {
+
+        // Garbage-collect expired tasks first (TTL: 24 hours)
+        let now = std::time::SystemTime::now();
+        let ttl = std::time::Duration::from_secs(24 * 3600);
+        let expired_keys: Vec<String> = tasks
+            .iter()
+            .filter(|(_, t)| {
+                t.created_at
+                    .map(|c| now.duration_since(c).unwrap_or_default() > ttl)
+                    .unwrap_or(false)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in expired_keys {
+            tasks.remove(&key);
+        }
+
+        // Evict if still at capacity
+        while tasks.len() >= self.max_tasks {
+            // Priority 1: evict completed/failed/cancelled tasks
             let evict_key = tasks
                 .iter()
                 .filter(|(_, t)| {
@@ -245,8 +271,20 @@ impl A2aTaskStore {
                 .next();
             if let Some(key) = evict_key {
                 tasks.remove(&key);
+                continue;
+            }
+            // Priority 2: evict oldest in-progress task (hard cap enforcement)
+            let oldest_key = tasks.keys().next().cloned();
+            if let Some(key) = oldest_key {
+                tracing::warn!(task_id = %key, "A2A task store at capacity — evicting in-progress task");
+                tasks.remove(&key);
+            } else {
+                break;
             }
         }
+
+        let mut task = task;
+        task.created_at = Some(std::time::SystemTime::now());
         tasks.insert(task.id.clone(), task);
     }
 
@@ -548,6 +586,7 @@ mod tests {
             status: A2aTaskStatus::Submitted.into(),
             messages: vec![],
             artifacts: vec![],
+            created_at: None,
         };
         assert_eq!(task.status, A2aTaskStatus::Submitted);
 
@@ -652,6 +691,7 @@ mod tests {
             status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
+            created_at: None,
         };
         store.insert(task);
         assert_eq!(store.len(), 1);
@@ -669,6 +709,7 @@ mod tests {
             status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
+            created_at: None,
         };
         store.insert(task);
 
@@ -697,6 +738,7 @@ mod tests {
             status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
+            created_at: None,
         };
         store.insert(task);
         assert!(store.cancel("t-3"));
@@ -716,6 +758,7 @@ mod tests {
                 status: A2aTaskStatus::Completed.into(),
                 messages: vec![],
                 artifacts: vec![],
+                created_at: None,
             };
             store.insert(task);
         }
@@ -728,6 +771,7 @@ mod tests {
             status: A2aTaskStatus::Working.into(),
             messages: vec![],
             artifacts: vec![],
+            created_at: None,
         };
         store.insert(task);
         // One was evicted, plus the new one
