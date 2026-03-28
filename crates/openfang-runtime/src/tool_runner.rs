@@ -1496,11 +1496,18 @@ async fn tool_shell_exec(
     // This avoids invoking a shell interpreter, which eliminates an entire class
     // of injection attacks (encoding tricks, $IFS, glob expansion, etc.).
     //
+    // Exception: commands with pipes, &&, ||, or redirects need `sh -c` even in
+    // Allowlist mode because direct binary execution can't handle them. These
+    // operators have already been validated by extract_all_commands() which checks
+    // each segment against the allowlist. (upstream #799)
+    //
     // In Full mode: User explicitly opted into unrestricted shell access,
     // so we use sh -c / cmd /C as before.
-    let use_direct_exec = exec_policy
+    let is_allowlist = exec_policy
         .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
-        .unwrap_or(true); // Default to safe mode
+        .unwrap_or(true);
+    let use_direct_exec = is_allowlist
+        && !crate::subprocess_sandbox::needs_shell_interpreter(command);
 
     let mut cmd = if use_direct_exec {
         // SAFE PATH: Split command into argv using POSIX shell lexer rules,

