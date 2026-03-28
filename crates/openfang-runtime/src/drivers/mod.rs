@@ -533,6 +533,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
         ("volcengine_coding", "ark-code-latest", "VOLCENGINE_API_KEY"),
+        ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",
@@ -974,5 +975,32 @@ mod tests {
             driver.is_ok(),
             "azure-openai alias should create driver successfully"
         );
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine() {
+        let d = provider_defaults("volcengine").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_doubao_alias() {
+        let d = provider_defaults("doubao").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_coding() {
+        let d = provider_defaults("volcengine_coding").unwrap();
+        assert_eq!(
+            d.base_url,
+            "https://ark.cn-beijing.volces.com/api/coding/v3"
+        );
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
     }
 }
