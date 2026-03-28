@@ -18,6 +18,9 @@ use openfang_memory::session::Session;
 use openfang_memory::MemorySubstrate;
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::agent::{AgentManifest, FallbackModel};
+use openfang_types::model_catalog::{
+    DOUBAO_PROVIDER_ID, VOLCENGINE_CODING_PROVIDER_ID, VOLCENGINE_PROVIDER_ID,
+};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
 use openfang_types::message::{
@@ -122,7 +125,10 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     // native provider models with the same name (e.g. ark/minimax-m2.5 vs
     // minimax provider's minimax-m2.5). The Ark API endpoint expects the bare
     // model name (e.g. "minimax-m2.5"), not the namespaced form.
-    if (provider == "volcengine_coding" || provider == "volcengine" || provider == "doubao")
+    // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
+    if (provider == VOLCENGINE_CODING_PROVIDER_ID
+        || provider == VOLCENGINE_PROVIDER_ID
+        || provider == DOUBAO_PROVIDER_ID)
         && result.starts_with("ark/")
     {
         result = result["ark/".len()..].to_string();

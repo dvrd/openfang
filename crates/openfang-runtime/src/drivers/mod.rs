@@ -516,8 +516,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, nvidia, codex, claude-code, alibaba_coding_plan (or alibaba-coding-plan), \
-             volcengine (doubao), volcengine_coding. Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, nvidia, codex, claude-code, qwen-code, kimi_coding, zhipu_coding, \
+             zai, zai_coding, qianfan, moonshot, lemonade, \
+             alibaba_coding_plan (or alibaba-coding-plan), \
+             volcengine (or doubao), volcengine_coding. \
+             Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -619,6 +622,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "qianfan",
         "volcengine",
         "volcengine_coding",
+        "doubao",
         "chutes",
         "venice",
         "nvidia",
@@ -726,6 +730,7 @@ mod tests {
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"volcengine_coding"));
+        assert!(providers.contains(&"doubao"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"codex"));
@@ -734,7 +739,7 @@ mod tests {
         assert!(providers.contains(&"azure"));
         // Alibaba Coding Plan
         assert!(providers.contains(&"alibaba_coding_plan"));
-        assert_eq!(providers.len(), 38);
+        assert_eq!(providers.len(), 40);
     }
 
     #[test]
@@ -856,6 +861,42 @@ mod tests {
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_doubao_alias_driver_with_direct_key() {
+        // "doubao" is a provider alias for volcengine — create_driver should route it correctly.
+        let config = DriverConfig {
+            provider: "doubao".to_string(),
+            api_key: Some("sk-test-doubao-direct-key-12345".to_string()),
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "doubao provider alias with direct API key should succeed: {:?}",
+            driver.err()
+        );
+    }
+
+    #[test]
+    fn test_doubao_alias_driver_no_key_errors() {
+        // "doubao" with no key and a unique base_url should return MissingApiKey.
+        let config = DriverConfig {
+            provider: "doubao".to_string(),
+            api_key: None,
+            base_url: Some("https://test-doubao-no-key.invalid".to_string()),
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_err(), "Expected error when doubao api_key is None");
+        let err = driver.err().unwrap().to_string();
+        assert!(
+            err.contains("VOLCENGINE_API_KEY"),
+            "Error should mention VOLCENGINE_API_KEY: {}",
+            err
+        );
     }
 
     #[test]
