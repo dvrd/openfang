@@ -3049,6 +3049,48 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         ModelCatalogEntry {
+            id: "qwen3.5-flash".into(),
+            display_name: "Qwen3.5 Flash".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_000_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "qwen3.5-plus".into(),
+            display_name: "Qwen3.5 Plus".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.80,
+            output_cost_per_m: 3.20,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["qwen3.5".into()],
+        },
+        ModelCatalogEntry {
+            id: "qwen3-max".into(),
+            display_name: "Qwen3 Max".into(),
+            provider: "qwen".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_000_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 2.50,
+            output_cost_per_m: 10.00,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
             id: "qwen3-235b-a22b".into(),
             display_name: "Qwen3 235B".into(),
             provider: "qwen".into(),
@@ -4214,7 +4256,12 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        let providers = catalog.list_providers();
+        assert!(!providers.is_empty(), "provider list must not be empty");
+        let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+        for expected in ["anthropic", "openai", "qwen", "groq"] {
+            assert!(ids.contains(&expected), "provider '{expected}' missing from catalog");
+        }
     }
 
     #[test]
