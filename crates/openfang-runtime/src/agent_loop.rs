@@ -18,7 +18,9 @@ use openfang_memory::session::Session;
 use openfang_memory::MemorySubstrate;
 use openfang_skills::registry::SkillRegistry;
 use openfang_types::agent::{AgentManifest, FallbackModel};
-use openfang_types::model_catalog::{VOLCENGINE_CODING_PROVIDER_ID, VOLCENGINE_PROVIDER_ID};
+use openfang_types::model_catalog::{
+    DOUBAO_PROVIDER_ID, VOLCENGINE_CODING_PROVIDER_ID, VOLCENGINE_PROVIDER_ID,
+};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
 use openfang_types::message::{
@@ -126,7 +128,7 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     // Strip ark/ prefix only for Volcano Engine providers (Ark marketplace models)
     if (provider == VOLCENGINE_CODING_PROVIDER_ID
         || provider == VOLCENGINE_PROVIDER_ID
-        || provider == "doubao")
+        || provider == DOUBAO_PROVIDER_ID)
         && result.starts_with("ark/")
     {
         result = result["ark/".len()..].to_string();

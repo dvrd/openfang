@@ -58,6 +58,8 @@ pub const ALIBABA_CODING_PLAN_BASE_URL: &str = "https://coding-intl.dashscope.al
 pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
 /// Canonical provider ID for Volcano Engine Coding Plan (Ark /api/coding/v3 endpoint).
 pub const VOLCENGINE_CODING_PROVIDER_ID: &str = "volcengine_coding";
+/// Provider alias for Doubao — routes to the Volcano Engine standard Ark endpoint.
+pub const DOUBAO_PROVIDER_ID: &str = "doubao";
 
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
