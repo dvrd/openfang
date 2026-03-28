@@ -71,6 +71,12 @@ impl AgentScheduler {
         if let Some(mut tracker) = self.usage.get_mut(&agent_id) {
             tracker.reset_if_expired();
             tracker.total_tokens += usage.total();
+        } else {
+            tracing::warn!(
+                agent_id = %agent_id,
+                tokens = usage.total(),
+                "Token usage for unregistered agent — quota enforcement may undercount"
+            );
         }
     }
 

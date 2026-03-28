@@ -459,7 +459,13 @@ impl SessionStore {
                     let safe_start = (start..full_summary.len())
                         .find(|&i| full_summary.is_char_boundary(i))
                         .unwrap_or(full_summary.len());
-                    full_summary = full_summary[safe_start..].to_string();
+                    // Advance to the next newline to avoid injecting a partial
+                    // line fragment into the LLM context.
+                    let line_start = full_summary[safe_start..]
+                        .find('\n')
+                        .map(|i| safe_start + i + 1)
+                        .unwrap_or(safe_start);
+                    full_summary = full_summary[line_start..].to_string();
                 }
                 canonical.compacted_summary = Some(full_summary);
                 canonical.compaction_cursor = to_compact;

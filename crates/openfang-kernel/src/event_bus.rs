@@ -58,8 +58,16 @@ impl EventBus {
             }
             EventTarget::Broadcast => {
                 let _ = self.sender.send(event.clone());
-                for entry in self.agent_channels.iter() {
-                    let _ = entry.value().send(event.clone());
+                // Collect senders first, then drop the DashMap iterator before
+                // sending — holding the iterator during send() can deadlock if a
+                // subscriber calls unsubscribe_agent on the same shard.
+                let senders: Vec<_> = self
+                    .agent_channels
+                    .iter()
+                    .map(|e| e.value().clone())
+                    .collect();
+                for sender in senders {
+                    let _ = sender.send(event.clone());
                 }
             }
             EventTarget::Pattern(_pattern) => {

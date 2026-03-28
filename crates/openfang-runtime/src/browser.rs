@@ -798,6 +798,8 @@ fn chromium_candidates() -> Vec<String> {
 /// Manages browser sessions for all agents.
 pub struct BrowserManager {
     sessions: DashMap<String, Arc<Mutex<BrowserSession>>>,
+    /// Per-agent creation locks to prevent TOCTOU race in get_or_create.
+    creation_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     config: BrowserConfig,
 }
 
@@ -806,6 +808,7 @@ impl BrowserManager {
     pub fn new(config: BrowserConfig) -> Self {
         Self {
             sessions: DashMap::new(),
+            creation_locks: DashMap::new(),
             config,
         }
     }
@@ -848,7 +851,25 @@ impl BrowserManager {
     }
 
     /// Get existing session or create a new one.
+    ///
+    /// Uses a per-agent creation lock to prevent the TOCTOU race where two
+    /// concurrent calls both see `get() == None`, both launch Chromium, and
+    /// one session leaks as an orphaned process.
     async fn get_or_create(&self, agent_id: &str) -> Result<Arc<Mutex<BrowserSession>>, String> {
+        // Fast path: session already exists.
+        if let Some(entry) = self.sessions.get(agent_id) {
+            return Ok(Arc::clone(entry.value()));
+        }
+
+        // Slow path: acquire a per-agent creation lock to serialize launches.
+        let lock = self
+            .creation_locks
+            .entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+
+        // Re-check after acquiring the lock — another task may have created it.
         if let Some(entry) = self.sessions.get(agent_id) {
             return Ok(Arc::clone(entry.value()));
         }
