@@ -66,6 +66,15 @@ fn validate_command(command: &str) -> Result<(), String> {
     if command.is_empty() {
         return Err("Command cannot be empty".into());
     }
+    // Docker exec runs commands via `sh -c` inside the container, so pipes
+    // and redirects ARE dangerous here (unlike the host exec policy which
+    // validates each pipeline segment). Block them explicitly.
+    if command.contains('|') {
+        return Err("Command blocked: contains pipe operator — not allowed in Docker exec".into());
+    }
+    if command.contains('>') || command.contains('<') {
+        return Err("Command blocked: contains I/O redirection — not allowed in Docker exec".into());
+    }
     if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
         return Err(format!(
             "Command blocked: contains {reason} — potential injection"
