@@ -197,6 +197,66 @@ fn extract_all_commands(command: &str) -> Vec<&str> {
     commands
 }
 
+/// Known shell interpreters that can execute inner command strings.
+const SHELL_INTERPRETERS: &[&str] = &[
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "cmd",
+    "cmd.exe",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "dash",
+];
+
+/// Flags that introduce an inner command string in shell interpreters.
+const SHELL_CMD_FLAGS: &[&str] = &[
+    "-command",  // powershell -Command "..."
+    "-c",        // bash -c "...", sh -c "..."
+    "/c",        // cmd /c "..."
+    "/C",        // cmd /C "..."
+    "-encodedcommand", // powershell -EncodedCommand (base64)
+    "-ec",       // powershell shorthand for -EncodedCommand
+];
+
+/// If the command invokes a shell interpreter with a command flag, extract
+/// the inner command string. Returns `None` if the outer command is not a
+/// shell interpreter or has no inner command.
+///
+/// Examples:
+///   `powershell -Command "Remove-Item C:\foo"` → `Some("Remove-Item C:\foo")`
+///   `bash -c "rm -rf /tmp"` → `Some("rm -rf /tmp")`
+///   `cat /etc/hosts` → `None`
+fn extract_shell_interpreter_inner(command: &str) -> Option<String> {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let base = extract_base_command(parts[0]).to_lowercase();
+    if !SHELL_INTERPRETERS.iter().any(|s| base == *s) {
+        return None;
+    }
+    // Find the command flag and extract everything after it
+    for (i, part) in parts.iter().enumerate().skip(1) {
+        let lower = part.to_lowercase();
+        if SHELL_CMD_FLAGS.iter().any(|f| lower == *f) {
+            // Reject -EncodedCommand — we can't validate base64-encoded commands
+            if lower == "-encodedcommand" || lower == "-ec" {
+                return Some("__encoded_command__".to_string());
+            }
+            // Everything after the flag is the inner command
+            let inner = parts[i + 1..].join(" ");
+            // Strip surrounding quotes
+            let inner = inner.trim_matches('"').trim_matches('\'').to_string();
+            return if inner.is_empty() { None } else { Some(inner) };
+        }
+    }
+    None
+}
+
 /// Validate a shell command against the exec policy.
 ///
 /// Returns `Ok(())` if the command is allowed, `Err(reason)` if blocked.
@@ -235,6 +295,31 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
                     base
                 ));
             }
+
+            // SECURITY: Shell interpreter pass-through check.
+            // If the outer command is a shell interpreter (powershell, cmd, bash, sh, etc.),
+            // extract and validate the inner command against the same allowlist.
+            // Without this, `powershell -Command "Remove-Item ..."` bypasses the policy
+            // because only the outer "powershell" is checked.
+            if let Some(inner) = extract_shell_interpreter_inner(command) {
+                // Validate the inner command recursively through the same pipeline.
+                // Note: metachar check already passed above for the full string,
+                // but inner command may reference disallowed binaries.
+                let inner_commands = extract_all_commands(&inner);
+                for inner_base in &inner_commands {
+                    if policy.safe_bins.iter().any(|sb| sb == inner_base) {
+                        continue;
+                    }
+                    if policy.allowed_commands.iter().any(|ac| ac == inner_base) {
+                        continue;
+                    }
+                    return Err(format!(
+                        "Command '{}' (inside shell interpreter) is not in the exec allowlist.",
+                        inner_base
+                    ));
+                }
+            }
+
             Ok(())
         }
     }
@@ -901,5 +986,95 @@ mod tests {
         let cmds = extract_all_commands(cmd);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0], "\u{4f60}\u{597d}");
+    }
+
+    // ── Shell interpreter pass-through tests ──────────────────────────
+
+    #[test]
+    fn test_extract_shell_interpreter_inner_powershell() {
+        let inner = extract_shell_interpreter_inner(
+            r#"powershell -Command "Remove-Item -Recurse C:\foo""#,
+        );
+        assert_eq!(inner.as_deref(), Some("Remove-Item -Recurse C:\\foo"));
+    }
+
+    #[test]
+    fn test_extract_shell_interpreter_inner_bash() {
+        let inner = extract_shell_interpreter_inner("bash -c 'rm -rf /tmp/junk'");
+        assert_eq!(inner.as_deref(), Some("rm -rf /tmp/junk"));
+    }
+
+    #[test]
+    fn test_extract_shell_interpreter_inner_cmd() {
+        let inner = extract_shell_interpreter_inner("cmd /c del C:\\temp\\file.txt");
+        assert_eq!(inner.as_deref(), Some("del C:\\temp\\file.txt"));
+    }
+
+    #[test]
+    fn test_extract_shell_interpreter_inner_not_interpreter() {
+        assert!(extract_shell_interpreter_inner("cat /etc/hosts").is_none());
+        assert!(extract_shell_interpreter_inner("echo hello").is_none());
+    }
+
+    #[test]
+    fn test_extract_shell_interpreter_inner_encoded_command() {
+        let inner = extract_shell_interpreter_inner(
+            "powershell -EncodedCommand SGVsbG8gV29ybGQ=",
+        );
+        // Encoded commands can't be inspected — should return a sentinel
+        assert_eq!(inner.as_deref(), Some("__encoded_command__"));
+    }
+
+    #[test]
+    fn test_policy_blocks_powershell_inner_command() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["powershell".to_string()],
+            ..ExecPolicy::default()
+        };
+        // powershell itself is allowed, but Remove-Item inside is not
+        let result = validate_command_allowlist(
+            r#"powershell -Command "Remove-Item C:\foo""#,
+            &policy,
+        );
+        assert!(result.is_err(), "Should block Remove-Item inside powershell");
+        assert!(result.unwrap_err().contains("Remove-Item"));
+    }
+
+    #[test]
+    fn test_policy_blocks_bash_inner_command() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist("bash -c 'rm -rf /'", &policy);
+        assert!(result.is_err(), "Should block rm inside bash -c");
+    }
+
+    #[test]
+    fn test_policy_allows_safe_inner_command() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        // "echo" is in safe_bins by default
+        let result = validate_command_allowlist("bash -c 'echo hello'", &policy);
+        assert!(result.is_ok(), "Should allow echo inside bash -c");
+    }
+
+    #[test]
+    fn test_policy_blocks_encoded_powershell() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["powershell".to_string()],
+            ..ExecPolicy::default()
+        };
+        let result = validate_command_allowlist(
+            "powershell -EncodedCommand SGVsbG8gV29ybGQ=",
+            &policy,
+        );
+        assert!(result.is_err(), "Should block -EncodedCommand (can't inspect)");
     }
 }
