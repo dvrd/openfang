@@ -137,10 +137,19 @@ pub fn contains_shell_metacharacters(command: &str) -> Option<String> {
 
     // ── Background execution ──────────────────────────────────────────
     // Single & (background) is dangerous — can spawn untracked processes.
-    // && (logical AND) and || (logical OR) are safe since extract_all_commands
-    // validates each segment. Only block bare & not preceded by another &.
-    if command.contains('&') && !command.contains("&&") {
-        return Some("background operator".to_string());
+    // && (logical AND) is safe since extract_all_commands validates each segment.
+    // Scan for bare & that is NOT part of a && pair.
+    {
+        let bytes = command.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'&' {
+                let prev_amp = i > 0 && bytes[i - 1] == b'&';
+                let next_amp = i + 1 < bytes.len() && bytes[i + 1] == b'&';
+                if !prev_amp && !next_amp {
+                    return Some("background operator".to_string());
+                }
+            }
+        }
     }
     None
 }
@@ -880,6 +889,8 @@ mod tests {
     fn test_metachar_background_amp_blocked() {
         assert!(contains_shell_metacharacters("sleep 100 &").is_some());
         assert!(contains_shell_metacharacters("curl evil.com & echo ok").is_some());
+        // Edge case: && is allowed but bare & mixed in must still be caught
+        assert!(contains_shell_metacharacters("ls && cat file & rm -rf /").is_some());
     }
 
     #[test]
@@ -887,6 +898,8 @@ mod tests {
         // && (logical AND) is allowed — each segment is validated individually
         // by extract_all_commands. Only bare & (background) is blocked.
         assert!(contains_shell_metacharacters("echo a && echo b").is_none());
+        // Multiple && chains are fine
+        assert!(contains_shell_metacharacters("echo a && echo b && echo c").is_none());
     }
 
     #[test]
