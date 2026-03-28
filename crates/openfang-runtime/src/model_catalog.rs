@@ -862,7 +862,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── Volcano Engine (Doubao) ──────────────────────────────────
         ProviderInfo {
             id: "volcengine".into(),
-            display_name: "Volcano Engine (Doubao)".into(),
+            display_name: "Volcano Engine".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
             key_required: true,
@@ -3612,8 +3612,155 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
+        // Volcano Engine Coding Plan (9)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "ark-code-latest".into(),
+            display_name: "Ark Code (Latest)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["ark-code".into()],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-code".into(),
+            display_name: "Doubao Seed 2.0 Code".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-pro".into(),
+            display_name: "Doubao Seed 2.0 Pro".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-2.0-lite".into(),
+            display_name: "Doubao Seed 2.0 Lite (Ark Coding)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Fast,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "doubao-seed-code-ark".into(),
+            display_name: "Doubao Seed Code (Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // Third-party models available via Ark marketplace.
+        // The "ark/" prefix is the canonical ID for these Ark marketplace models to avoid
+        // collisions with native provider entries (minimax, zhipu, moonshot).
+        // The bare model name is kept as an alias only where no collision exists.
+        // Pricing not publicly documented for Ark-routed third-party models; set to 0.0
+        ModelCatalogEntry {
+            id: "ark/minimax-m2.5".into(),
+            display_name: "MiniMax M2.5 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "minimax-m2.5" NOT added as alias — already canonical on the minimax provider entry
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "ark/glm-4.7".into(),
+            display_name: "GLM 4.7 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Balanced,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "glm-4.7" NOT added as alias — already canonical on the zhipu provider entry
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "ark/deepseek-v3.2".into(),
+            display_name: "DeepSeek V3.2 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "deepseek-v3.2" kept as alias — no collision with other providers
+            aliases: vec!["deepseek-v3.2".into()],
+        },
+        ModelCatalogEntry {
+            id: "ark/kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (via Ark)".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            // "kimi-k2.5" NOT added as alias — already canonical on the moonshot provider entry
+            aliases: vec![],
+        },
+
+        // ══════════════════════════════════════════════════════════════
         // Volcano Engine / Doubao (4)
         // ══════════════════════════════════════════════════════════════
+        //
+        // NOTE on separators: the volcengine provider uses hyphen-only IDs
+        // (e.g. "doubao-seed-2-0-lite") because the Ark /api/v3 endpoint uses
+        // endpoint-access-point names that don't contain dots. The
+        // volcengine_coding entries above use dot notation
+        // (e.g. "doubao-seed-2.0-lite") which is the model version string used
+        // by the /api/coding/v3 endpoint. These are different endpoint paths
+        // and the IDs must not be unified.
         ModelCatalogEntry {
             id: "doubao-seed-1-6-251015".into(),
             display_name: "Doubao Seed 1.6 Pro".into(),
@@ -3626,6 +3773,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
+            // "doubao" also maps to the volcengine provider in provider_defaults() — intentional dual alias
+            // Also matched as a provider alias in provider_defaults() — keep in sync
             aliases: vec!["doubao".into(), "doubao-pro".into()],
         },
         ModelCatalogEntry {
@@ -3656,6 +3805,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["doubao-mini".into()],
         },
+        // Standard plan (/api/v3) variant; see volcengine_coding for the coding-plan endpoint
         ModelCatalogEntry {
             id: "doubao-seed-code".into(),
             display_name: "Doubao Seed Code".into(),
@@ -4778,5 +4928,48 @@ mod tests {
             .unwrap();
         assert_eq!(found.provider, "custom_provider");
         assert_eq!(found.id, "My-Custom-LLM");
+    }
+
+    #[test]
+    fn test_ark_alias_resolution() {
+        let catalog = ModelCatalog::new();
+        // ark/ IDs are now canonical — resolve_alias returns the id itself (no alias mapping needed)
+        // deepseek-v3.2 is still an alias pointing to ark/deepseek-v3.2
+        assert_eq!(catalog.resolve_alias("deepseek-v3.2"), Some("ark/deepseek-v3.2"));
+        // find_model via ark/ canonical ID returns the volcengine_coding entry directly.
+        let m25 = catalog.find_model("ark/minimax-m2.5").unwrap();
+        assert_eq!(m25.id, "ark/minimax-m2.5");
+        assert_eq!(m25.provider, "volcengine_coding");
+        // glm-4.7 canonical ID now belongs to ark entry; zhipu entry is unaffected.
+        let glm = catalog.find_model("ark/glm-4.7").unwrap();
+        assert_eq!(glm.id, "ark/glm-4.7");
+        assert_eq!(glm.provider, "volcengine_coding");
+        // deepseek-v3.2 exists only under volcengine_coding; bare alias still resolves.
+        let ds = catalog.find_model("ark/deepseek-v3.2").unwrap();
+        assert_eq!(ds.id, "ark/deepseek-v3.2");
+        assert_eq!(ds.provider, "volcengine_coding");
+        let ds_alias = catalog.find_model("deepseek-v3.2").unwrap();
+        assert_eq!(ds_alias.id, "ark/deepseek-v3.2");
+        let kimi = catalog.find_model("ark/kimi-k2.5").unwrap();
+        assert_eq!(kimi.id, "ark/kimi-k2.5");
+        assert_eq!(kimi.provider, "volcengine_coding");
+        // Native provider entries are unaffected by the ark/ rename
+        let minimax_native = catalog.find_model("minimax-m2.5").unwrap();
+        assert_eq!(minimax_native.provider, "minimax");
+        let glm_native = catalog.find_model("glm-4.7").unwrap();
+        assert_eq!(glm_native.provider, "zhipu");
+        let kimi_native = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(kimi_native.provider, "moonshot");
+    }
+
+    #[test]
+    fn test_doubao_alias_resolves_to_volcengine_model() {
+        let catalog = ModelCatalog::new();
+        // "doubao" alias should resolve to the model ID
+        let resolved = catalog.resolve_alias("doubao");
+        assert_eq!(resolved, Some("doubao-seed-1-6-251015"));
+        // The model should belong to the volcengine provider
+        let model = catalog.find_model("doubao-seed-1-6-251015").unwrap();
+        assert_eq!(model.provider, "volcengine");
     }
 }

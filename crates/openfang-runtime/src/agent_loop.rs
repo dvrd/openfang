@@ -110,13 +110,24 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     let provider_normalized = provider.replace('_', "-");
     let slash_prefix = format!("{}/", provider_normalized);
     let colon_prefix = format!("{}:", provider_normalized);
-    if model.starts_with(&slash_prefix) {
+    let mut result = if model.starts_with(&slash_prefix) {
         model[slash_prefix.len()..].to_string()
     } else if model.starts_with(&colon_prefix) {
         model[colon_prefix.len()..].to_string()
     } else {
         model.to_string()
+    };
+    // Strip "ark/" catalog namespace prefix before sending to Ark API.
+    // "ark/" is used internally to disambiguate Ark marketplace models from
+    // native provider models with the same name (e.g. ark/minimax-m2.5 vs
+    // minimax provider's minimax-m2.5). The Ark API endpoint expects the bare
+    // model name (e.g. "minimax-m2.5"), not the namespaced form.
+    if (provider == "volcengine_coding" || provider == "volcengine" || provider == "doubao")
+        && result.starts_with("ark/")
+    {
+        result = result["ark/".len()..].to_string();
     }
+    result
 }
 
 /// Default context window size (tokens) for token-based trimming.
@@ -3045,6 +3056,42 @@ mod tests {
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    #[test]
+    fn test_strip_ark_catalog_prefix_for_volcengine_coding() {
+        // ark/ is catalog-only; Ark API expects bare name
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine_coding"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_volcengine() {
+        // Should strip ark/ for volcengine
+        assert_eq!(
+            strip_provider_prefix("ark/doubao-seed-code", "volcengine"),
+            "doubao-seed-code"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_doubao() {
+        // Should strip ark/ for doubao provider alias
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "doubao"),
+            "some-model"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_prefix_ark_not_stripped_for_other_providers() {
+        // Must NOT strip ark/ for non-volcengine providers
+        assert_eq!(
+            strip_provider_prefix("ark/some-model", "openai"),
+            "ark/some-model"
+        );
     }
 
     // --- Integration tests for empty response guards ---

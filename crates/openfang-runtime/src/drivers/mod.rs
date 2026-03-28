@@ -2,7 +2,8 @@
 //!
 //! Contains drivers for Anthropic Claude, Google Gemini, OpenAI-compatible APIs, and more.
 //! Supports: Anthropic, Gemini, OpenAI, Groq, OpenRouter, DeepSeek, Together,
-//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, and any OpenAI-compatible endpoint.
+//! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, volcengine (Doubao / Ark),
+//! and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
 pub mod claude_code;
@@ -198,6 +199,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "QIANFAN_API_KEY",
             key_required: true,
         }),
+        // "doubao" is also a model alias in builtin_aliases; here it acts as a provider alias
         "volcengine" | "doubao" => Some(ProviderDefaults {
             base_url: VOLCENGINE_BASE_URL,
             api_key_env: "VOLCENGINE_API_KEY",
@@ -261,6 +263,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `xai` — xAI (Grok)
 /// - `replicate` — Replicate
 /// - `chutes` — Chutes.ai (serverless open-source model inference)
+/// - `volcengine` — Volcano Engine (Doubao/Ark)
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
 pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
@@ -513,7 +516,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, nvidia, codex, claude-code, alibaba_coding_plan (or alibaba-coding-plan). Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, nvidia, codex, claude-code, alibaba_coding_plan (or alibaba-coding-plan), \
+             volcengine (doubao), volcengine_coding. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -531,6 +535,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
+        ("volcengine", "doubao-seed-1-6-251015", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",
@@ -613,6 +618,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "kimi_coding",
         "qianfan",
         "volcengine",
+        "volcengine_coding",
         "chutes",
         "venice",
         "nvidia",
@@ -719,6 +725,7 @@ mod tests {
         assert!(providers.contains(&"kimi_coding"));
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
+        assert!(providers.contains(&"volcengine_coding"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"codex"));
@@ -970,5 +977,32 @@ mod tests {
             driver.is_ok(),
             "azure-openai alias should create driver successfully"
         );
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine() {
+        let d = provider_defaults("volcengine").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_doubao_alias() {
+        let d = provider_defaults("doubao").unwrap();
+        assert_eq!(d.base_url, "https://ark.cn-beijing.volces.com/api/v3");
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_volcengine_coding() {
+        let d = provider_defaults("volcengine_coding").unwrap();
+        assert_eq!(
+            d.base_url,
+            "https://ark.cn-beijing.volces.com/api/coding/v3"
+        );
+        assert_eq!(d.api_key_env, "VOLCENGINE_API_KEY");
+        assert!(d.key_required);
     }
 }
