@@ -1547,7 +1547,12 @@ impl OpenFangKernel {
             .clone();
         let _guard = lock.lock().await;
 
-        // Enforce quota before running the agent loop
+        // Enforce quota before running the agent loop.
+        // NOTE: Per-agent lock above serializes concurrent calls to the same agent,
+        // preventing per-agent budget overshoot. Cross-agent global budget can still
+        // overshoot by at most (N_agents × max_call_cost) under extreme concurrency,
+        // but this is acceptable — true atomic reservation would require locking across
+        // all agents and hurt throughput.
         self.scheduler
             .check_quota(agent_id)
             .map_err(KernelError::OpenFang)?;
@@ -3567,8 +3572,20 @@ impl OpenFangKernel {
         let plan = build_reload_plan(&self.config, &new_config);
         plan.log_summary();
 
-        // Apply hot actions if the reload mode allows it
-        if should_apply_hot(self.config.reload.mode, &plan) {
+        // SAFETY: Reject reloads where critical fields regressed to default values
+        // when they were previously non-default. This catches truncated config files
+        // (e.g. editor mid-write) that serde(default) silently fills with defaults.
+        if !self.config.api_key.is_empty() && new_config.api_key.is_empty() {
+            return Err("Reload rejected: api_key regressed to empty (partial config file?)".to_string());
+        }
+        if self.config.auth.enabled && !new_config.auth.enabled {
+            tracing::warn!("Hot-reload: auth.enabled changed from true to false — verify this is intentional");
+        }
+
+        // Apply hot actions if the NEW config's reload mode allows it.
+        // Using new_config ensures that changing reload.mode from Off→Hot
+        // takes effect immediately rather than requiring two reloads.
+        if should_apply_hot(new_config.reload.mode, &plan) {
             self.apply_hot_actions(&plan, &new_config);
         }
 
@@ -3619,10 +3636,10 @@ impl OpenFangKernel {
                 }
                 _ => {
                     // Other hot actions (channels, web, browser, extensions, etc.)
-                    // are logged but not applied here — they require subsystem-specific
-                    // reinitialization that should be added as those systems mature.
-                    info!(
-                        "Hot-reload: action {:?} noted but not yet auto-applied",
+                    // require subsystem-specific reinitialization. Log at warn level
+                    // so operators know a restart is needed to pick up these changes.
+                    tracing::warn!(
+                        "Hot-reload: action {:?} requires daemon restart to take effect",
                         action
                     );
                 }
@@ -4104,53 +4121,60 @@ impl OpenFangKernel {
                                 let timeout_s = timeout_secs.unwrap_or(120);
                                 let timeout = std::time::Duration::from_secs(timeout_s);
                                 let delivery = job.delivery.clone();
-                                let kh: std::sync::Arc<
-                                    dyn openfang_runtime::kernel_handle::KernelHandle,
-                                > = kernel.clone();
-                                match tokio::time::timeout(
-                                    timeout,
-                                    kernel.send_message_with_handle(
-                                        agent_id,
-                                        message,
-                                        Some(kh),
-                                        None,
-                                        None,
-                                    ),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(result)) => {
-                                        match cron_deliver_response(
-                                            &kernel,
+                                let message = message.clone();
+                                let kernel2 = kernel.clone();
+                                let job_name2 = job_name.clone();
+                                // Spawn each AgentTurn into its own task so a slow
+                                // job doesn't block other due jobs in the same tick.
+                                tokio::spawn(async move {
+                                    let kh: std::sync::Arc<
+                                        dyn openfang_runtime::kernel_handle::KernelHandle,
+                                    > = kernel2.clone();
+                                    match tokio::time::timeout(
+                                        timeout,
+                                        kernel2.send_message_with_handle(
                                             agent_id,
-                                            &result.response,
-                                            &delivery,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(job = %job_name, "Cron job completed successfully");
-                                                kernel.cron_scheduler.record_success(job_id);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
-                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                            &message,
+                                            Some(kh),
+                                            None,
+                                            None,
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(result)) => {
+                                            match cron_deliver_response(
+                                                &kernel2,
+                                                agent_id,
+                                                &result.response,
+                                                &delivery,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => {
+                                                    tracing::info!(job = %job_name2, "Cron job completed successfully");
+                                                    kernel2.cron_scheduler.record_success(job_id);
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(job = %job_name2, error = %e, "Cron job delivery failed");
+                                                    kernel2.cron_scheduler.record_failure(job_id, &e);
+                                                }
                                             }
                                         }
+                                        Ok(Err(e)) => {
+                                            let err_msg = format!("{e}");
+                                            tracing::warn!(job = %job_name2, error = %err_msg, "Cron job failed");
+                                            kernel2.cron_scheduler.record_failure(job_id, &err_msg);
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!(job = %job_name2, timeout_s, "Cron job timed out");
+                                            kernel2.cron_scheduler.record_failure(
+                                                job_id,
+                                                &format!("timed out after {timeout_s}s"),
+                                            );
+                                        }
                                     }
-                                    Ok(Err(e)) => {
-                                        let err_msg = format!("{e}");
-                                        tracing::warn!(job = %job_name, error = %err_msg, "Cron job failed");
-                                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
-                                    }
-                                    Err(_) => {
-                                        tracing::warn!(job = %job_name, timeout_s, "Cron job timed out");
-                                        kernel.cron_scheduler.record_failure(
-                                            job_id,
-                                            &format!("timed out after {timeout_s}s"),
-                                        );
-                                    }
-                                }
+                                });
                             }
                             openfang_types::scheduler::CronAction::WorkflowRun {
                                 workflow_id,
