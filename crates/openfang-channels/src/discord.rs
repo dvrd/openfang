@@ -106,17 +106,39 @@ impl DiscordAdapter {
 
         for chunk in chunks {
             let body = serde_json::json!({ "content": chunk });
-            let resp = self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bot {}", self.token.as_str()))
-                .json(&body)
-                .send()
-                .await?;
+            let mut retries = 0u32;
+            loop {
+                let resp = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bot {}", self.token.as_str()))
+                    .json(&body)
+                    .send()
+                    .await?;
 
-            if !resp.status().is_success() {
-                let body_text = resp.text().await.unwrap_or_default();
-                warn!("Discord sendMessage failed: {body_text}");
+                if resp.status().as_u16() == 429 {
+                    // Rate limited — parse Retry-After and back off.
+                    let retry_after = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(1.0);
+                    retries += 1;
+                    if retries > 3 {
+                        warn!("Discord rate limit: giving up after 3 retries");
+                        break;
+                    }
+                    warn!(retry_after, retries, "Discord rate limited — backing off");
+                    tokio::time::sleep(std::time::Duration::from_secs_f64(retry_after)).await;
+                    continue;
+                }
+
+                if !resp.status().is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    warn!("Discord sendMessage failed: {body_text}");
+                }
+                break;
             }
         }
         Ok(())
@@ -192,7 +214,8 @@ impl ChannelAdapter for DiscordAdapter {
                 info!("Discord gateway connected");
 
                 let (mut ws_tx, mut ws_rx) = ws_stream.split();
-                let mut _heartbeat_interval: Option<u64> = None;
+                // Heartbeat interval — initialized on HELLO, ticked in the select! loop.
+                let mut heartbeat_ticker: Option<tokio::time::Interval> = None;
 
                 // Inner message loop — returns true if we should reconnect
                 let should_reconnect = 'inner: loop {
@@ -204,6 +227,26 @@ impl ChannelAdapter for DiscordAdapter {
                                 let _ = ws_tx.close().await;
                                 return;
                             }
+                            continue;
+                        }
+                        // Proactive heartbeat: send opcode 1 on the configured interval.
+                        _ = async {
+                            if let Some(ref mut ticker) = heartbeat_ticker {
+                                ticker.tick().await
+                            } else {
+                                // No heartbeat configured yet — wait forever
+                                std::future::pending::<tokio::time::Instant>().await
+                            }
+                        } => {
+                            let seq_val = *sequence.read().await;
+                            let hb = serde_json::json!({ "op": 1, "d": seq_val });
+                            if let Err(e) = ws_tx.send(
+                                tokio_tungstenite::tungstenite::Message::Text(hb.to_string())
+                            ).await {
+                                warn!("Discord heartbeat send failed: {e}");
+                                break 'inner true;
+                            }
+                            debug!("Discord: sent proactive heartbeat (seq={seq_val:?})");
                             continue;
                         }
                     };
@@ -248,8 +291,20 @@ impl ChannelAdapter for DiscordAdapter {
                         opcode::HELLO => {
                             let interval =
                                 payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
-                            _heartbeat_interval = Some(interval);
                             debug!("Discord HELLO: heartbeat_interval={interval}ms");
+
+                            // Start proactive heartbeat timer — Discord disconnects
+                            // bots that don't heartbeat on the specified interval.
+                            // Add jitter (Discord recommends waiting interval * random(0,1)
+                            // before the first heartbeat).
+                            let jitter = interval / 4; // ~25% jitter
+                            let mut ticker = tokio::time::interval(
+                                std::time::Duration::from_millis(interval)
+                            );
+                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            // Skip the immediate first tick, wait jitter before first heartbeat
+                            ticker.reset_after(std::time::Duration::from_millis(jitter));
+                            heartbeat_ticker = Some(ticker);
 
                             // Try RESUME if we have a session, otherwise IDENTIFY
                             let has_session = session_id_store.read().await.is_some();
@@ -317,7 +372,7 @@ impl ChannelAdapter for DiscordAdapter {
                                     info!("Discord bot ready: {username} ({user_id})");
                                 }
 
-                                "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
+                                "MESSAGE_CREATE" => {
                                     if let Some(msg) = parse_discord_message(
                                         d,
                                         &bot_user_id,
@@ -335,6 +390,13 @@ impl ChannelAdapter for DiscordAdapter {
                                             return;
                                         }
                                     }
+                                }
+
+                                // MESSAGE_UPDATE: skip edited messages to prevent
+                                // double-processing. Edits re-deliver the full message
+                                // object which would otherwise be treated as a new message.
+                                "MESSAGE_UPDATE" => {
+                                    debug!("Discord MESSAGE_UPDATE ignored (edit dedup)");
                                 }
 
                                 "RESUMED" => {
