@@ -734,7 +734,7 @@ mod tests {
         assert!(providers.contains(&"azure"));
         // Alibaba Coding Plan
         assert!(providers.contains(&"alibaba_coding_plan"));
-        assert_eq!(providers.len(), 38);
+        assert_eq!(providers.len(), 39);
     }
 
     #[test]
