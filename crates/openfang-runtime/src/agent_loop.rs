@@ -360,12 +360,24 @@ pub async fn run_agent_loop(
         }
     }
 
-    // Use autonomous config max_iterations if set, else default
-    let max_iterations = manifest
-        .autonomous
-        .as_ref()
-        .map(|a| a.max_iterations)
-        .unwrap_or(MAX_ITERATIONS);
+    // Use autonomous config max_iterations if set, else default.
+    // For heartbeat/autonomous ticks (no real user input), cap iterations
+    // to prevent burning tokens on idle cycles (upstream #756).
+    let is_heartbeat_tick = user_message.contains("[AUTONOMOUS TICK]")
+        || user_message.contains("[HEARTBEAT]");
+    let max_iterations = if is_heartbeat_tick {
+        manifest
+            .autonomous
+            .as_ref()
+            .map(|a| a.max_iterations.min(5))
+            .unwrap_or(5)
+    } else {
+        manifest
+            .autonomous
+            .as_ref()
+            .map(|a| a.max_iterations)
+            .unwrap_or(MAX_ITERATIONS)
+    };
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
@@ -1550,12 +1562,24 @@ pub async fn run_agent_loop_streaming(
         }
     }
 
-    // Use autonomous config max_iterations if set, else default
-    let max_iterations = manifest
-        .autonomous
-        .as_ref()
-        .map(|a| a.max_iterations)
-        .unwrap_or(MAX_ITERATIONS);
+    // Use autonomous config max_iterations if set, else default.
+    // For heartbeat/autonomous ticks (no real user input), cap iterations
+    // to prevent burning tokens on idle cycles (upstream #756).
+    let is_heartbeat_tick = user_message.contains("[AUTONOMOUS TICK]")
+        || user_message.contains("[HEARTBEAT]");
+    let max_iterations = if is_heartbeat_tick {
+        manifest
+            .autonomous
+            .as_ref()
+            .map(|a| a.max_iterations.min(5))
+            .unwrap_or(5)
+    } else {
+        manifest
+            .autonomous
+            .as_ref()
+            .map(|a| a.max_iterations)
+            .unwrap_or(MAX_ITERATIONS)
+    };
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
