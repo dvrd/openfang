@@ -14,17 +14,23 @@
 use crate::agent_loop::SILENT_PLACEHOLDER;
 use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, warn};
 
 /// Returns true when an assistant message text represents a stored silent-completion placeholder.
-/// Recognises both the legacy `NO_REPLY` bare token and the current `SILENT_PLACEHOLDER`.
-/// Also catches `[SILENT]` in case a session was written before the placeholder was introduced.
+/// Recognises:
+/// - `NO_REPLY` bare token (case-insensitive)
+/// - `SILENT_PLACEHOLDER` = `(no reply needed)` — current form
+/// - `[no reply needed]` — legacy form written before this PR renamed the placeholder
+/// - `[SILENT]` bare token (case-insensitive) — written before the placeholder was introduced
+///
+/// If you add new forms here, also update `is_silent_token` in `agent_loop.rs`.
 fn is_silent_placeholder(t: &str) -> bool {
     let t = t.trim();
     t.eq_ignore_ascii_case("NO_REPLY")
         || t == SILENT_PLACEHOLDER
+        || t.eq_ignore_ascii_case("[no reply needed]")
         || t.eq_ignore_ascii_case("[silent]")
 }
-use tracing::{debug, warn};
 
 /// Statistics from a repair operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1201,6 +1207,24 @@ mod tests {
         ];
         prune_heartbeat_turns(&mut messages, 2);
         // Should have removed the first 4 messages (2 heartbeat pairs)
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_prune_heartbeat_turns_removes_legacy_silent_token() {
+        // Sessions written before the placeholder was introduced may contain bare [SILENT]
+        // or the old square-bracket form [no reply needed] — both must be pruned.
+        let mut messages = vec![
+            Message::user("ping"),
+            Message::assistant("[SILENT]".to_string()),
+            Message::user("ping2"),
+            Message::assistant("[no reply needed]".to_string()),
+            Message::user("Hello"),
+            Message::assistant("Hi there!"),
+        ];
+        prune_heartbeat_turns(&mut messages, 2);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
         assert_eq!(messages[1].role, Role::Assistant);
