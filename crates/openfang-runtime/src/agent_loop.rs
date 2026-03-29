@@ -89,6 +89,24 @@ fn phantom_action_detected(text: &str) -> bool {
     has_action && has_channel
 }
 
+/// Placeholder stored in session history when an agent issues a silent completion.
+/// Uses parentheses (not square brackets) so it cannot be re-parsed as a `[...]` token.
+pub(crate) const SILENT_PLACEHOLDER: &str = "(no reply needed)";
+
+/// Returns true when the agent response text is a bare silent-completion token.
+/// Matches `NO_REPLY` (case-insensitive) and `[SILENT]` (case-insensitive).
+/// Only whole-response tokens qualify — a token embedded in surrounding text is not silent.
+///
+/// Note: the double-bracket directive form `[[silent]]` is handled separately by
+/// `parse_directives` (case-sensitive) and sets `ReplyDirectives::silent`. This function
+/// only covers the bare-token form that some models emit without directive syntax.
+///
+/// If you add new tokens here, also update `is_silent_placeholder` in `session_repair.rs`.
+fn is_silent_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.eq_ignore_ascii_case("NO_REPLY") || trimmed.eq_ignore_ascii_case("[silent]")
+}
+
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
@@ -481,12 +499,15 @@ pub async fn run_agent_loop(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives.silent {
+                // Silent-completion guard: two forms reach this branch —
+                //   • bare token (`NO_REPLY`, `[SILENT]`) detected by is_silent_token
+                //   • directive form (`[[silent]]`) stripped by parse_directives → .silent = true
+                // Both must store a neutral placeholder so the token is never reinforced.
+                if is_silent_token(&text) || parsed_directives.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent — silent completion");
                     session
                         .messages
-                        .push(Message::assistant("[no reply needed]".to_string()));
+                        .push(Message::assistant(SILENT_PLACEHOLDER.to_string()));
                     memory
                         .save_session_async(session)
                         .await
@@ -1659,12 +1680,14 @@ pub async fn run_agent_loop_streaming(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
+                // Silent-completion guard (streaming): same two forms as the non-streaming path —
+                //   • bare token (`NO_REPLY`, `[SILENT]`) detected by is_silent_token
+                //   • directive form (`[[silent]]`) stripped by parse_directives → .silent = true
+                if is_silent_token(&text) || parsed_directives_s.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
                     session
                         .messages
-                        .push(Message::assistant("[no reply needed]".to_string()));
+                        .push(Message::assistant(SILENT_PLACEHOLDER.to_string()));
                     memory
                         .save_session_async(session)
                         .await
@@ -4725,5 +4748,61 @@ mod tests {
             events.push(ev);
         }
         assert!(!events.is_empty(), "Should have received stream events");
+    }
+
+    #[test]
+    fn test_silent_detection_uppercase() {
+        assert!(is_silent_token("[SILENT]"));
+    }
+
+    #[test]
+    fn test_silent_detection_lowercase() {
+        assert!(is_silent_token("[silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_mixed_case() {
+        assert!(is_silent_token("[Silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_with_whitespace() {
+        assert!(is_silent_token("  [SILENT]  "));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply() {
+        assert!(is_silent_token("NO_REPLY"));
+    }
+
+    #[test]
+    fn test_silent_detection_rejects_normal_text() {
+        assert!(!is_silent_token("Hello, how can I help?"));
+        assert!(!is_silent_token("SILENT"));
+        assert!(!is_silent_token(""));
+        // Embedded tokens must not trigger silent mode — only whole-response tokens qualify.
+        assert!(!is_silent_token("prefix [SILENT]"));
+        assert!(!is_silent_token("[SILENT] suffix"));
+        assert!(!is_silent_token("prefix NO_REPLY suffix"));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply_case_insensitive() {
+        assert!(is_silent_token("no_reply"));
+        assert!(is_silent_token("No_Reply"));
+        assert!(is_silent_token("  NO_REPLY  "));
+    }
+
+    #[test]
+    fn test_silent_detection_combined_directive_and_bare_token() {
+        // When [[silent]] directive is stripped by parse_directives, the leftover text
+        // may still be a bare [SILENT] token — is_silent_token must catch it.
+        let input = "[[silent]] [SILENT]";
+        let (cleaned, directives) = crate::reply_directives::parse_directives(input);
+        assert!(directives.silent, "[[silent]] directive should set .silent");
+        assert!(
+            is_silent_token(&cleaned),
+            "remaining [SILENT] token should also be detected"
+        );
     }
 }

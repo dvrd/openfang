@@ -11,9 +11,26 @@
 //! - Consecutive same-role messages (Anthropic API requires alternation)
 //! - Oversized or potentially malicious tool result content
 
+use crate::agent_loop::SILENT_PLACEHOLDER;
 use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
+
+/// Returns true when an assistant message text represents a stored silent-completion placeholder.
+/// Recognises:
+/// - `NO_REPLY` bare token (case-insensitive)
+/// - `SILENT_PLACEHOLDER` = `(no reply needed)` — current form
+/// - `[no reply needed]` — legacy form written before this PR renamed the placeholder
+/// - `[SILENT]` bare token (case-insensitive) — written before the placeholder was introduced
+///
+/// If you add new forms here, also update `is_silent_token` in `agent_loop.rs`.
+fn is_silent_placeholder(t: &str) -> bool {
+    let t = t.trim();
+    t.eq_ignore_ascii_case("NO_REPLY")
+        || t == SILENT_PLACEHOLDER
+        || t.eq_ignore_ascii_case("[no reply needed]")
+        || t.eq_ignore_ascii_case("[silent]")
+}
 
 /// Statistics from a repair operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -624,16 +641,11 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
     for i in 0..prune_end {
         if messages[i].role == Role::Assistant {
             let is_no_reply = match &messages[i].content {
-                MessageContent::Text(text) => {
-                    let t = text.trim();
-                    t == "NO_REPLY" || t == "[no reply needed]"
-                }
+                MessageContent::Text(text) => is_silent_placeholder(text),
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
-                        && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
-                            let t = text.trim();
-                            t == "NO_REPLY" || t == "[no reply needed]"
-                        })
+                        && matches!(&blocks[0], ContentBlock::Text { text, .. }
+                            if is_silent_placeholder(text))
                 }
             };
             if is_no_reply {
@@ -1189,12 +1201,30 @@ mod tests {
             Message::user("ping"),
             Message::assistant("NO_REPLY"),
             Message::user("ping2"),
-            Message::assistant("[no reply needed]"),
+            Message::assistant(SILENT_PLACEHOLDER.to_string()),
             Message::user("Hello"),
             Message::assistant("Hi there!"),
         ];
         prune_heartbeat_turns(&mut messages, 2);
         // Should have removed the first 4 messages (2 heartbeat pairs)
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_prune_heartbeat_turns_removes_legacy_silent_token() {
+        // Sessions written before the placeholder was introduced may contain bare [SILENT]
+        // or the old square-bracket form [no reply needed] — both must be pruned.
+        let mut messages = vec![
+            Message::user("ping"),
+            Message::assistant("[SILENT]".to_string()),
+            Message::user("ping2"),
+            Message::assistant("[no reply needed]".to_string()),
+            Message::user("Hello"),
+            Message::assistant("Hi there!"),
+        ];
+        prune_heartbeat_turns(&mut messages, 2);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
         assert_eq!(messages[1].role, Role::Assistant);

@@ -114,6 +114,7 @@ impl StreamingDirectiveAccumulator {
         } else if trimmed == "@current" {
             self.directives.current_thread = true;
         } else if trimmed == "silent" {
+            // case-sensitive by directive spec — models must emit [[silent]] exactly
             self.directives.silent = true;
         }
         // Unknown directives are silently dropped (stripped from output)
